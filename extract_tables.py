@@ -143,10 +143,11 @@ def _reconstruct_headers(camelot_table, pdf_path, page_num):
                 col_headers[ci].append((w_top_pdf, text))
                 break
 
-    # Build header text for each column by grouping words on the same line
+    # Build label text for each column (skip formula-like lines)
     for ci in col_headers:
         entries = sorted(col_headers[ci], key=lambda x: -x[0])  # top to bottom
         if not entries:
+            col_headers[ci] = ''
             continue
 
         # Group by y-position (words within 3pt are on the same line)
@@ -162,35 +163,60 @@ def _reconstruct_headers(camelot_table, pdf_path, page_num):
                 current_y = y
         lines.append(' '.join(current_line))
 
-        # Separate formula line (like "1 = 2 + 3") from label lines
-        label_lines = []
-        formula_lines = []
-        for line in lines:
-            if re.match(r'^[\d\s+=+]+$', line.strip()):
-                formula_lines.append(line.strip())
-            else:
-                label_lines.append(line.strip())
+        # Keep only label lines (not formulas/column indices)
+        label_lines = [l.strip() for l in lines
+                       if not re.match(r'^[\d\s+=+]+$', l.strip())]
+        col_headers[ci] = '\n'.join(label_lines) if label_lines else ''
 
-        col_headers[ci] = (
-            '\n'.join(label_lines) if label_lines else '',
-            '\n'.join(formula_lines) if formula_lines else '',
-        )
-
-    # Replace header rows: collapse into exactly 2 rows (labels, formulas)
-    new_header = [[''] * len(col_ranges) for _ in range(2)]
+    # Build label row from pdfplumber
+    new_labels = [''] * len(col_ranges)
     for ci, val in col_headers.items():
-        if isinstance(val, tuple):
-            new_header[0][ci] = val[0]
-            new_header[1][ci] = val[1]
+        new_labels[ci] = val
 
     # Check if pdfplumber found meaningful headers
-    total_labels = sum(1 for ci in col_headers if isinstance(col_headers[ci], tuple) and col_headers[ci][0])
+    total_labels = sum(1 for v in new_labels if v)
     if total_labels < 2:
         return df  # Not enough header data, keep camelot's version
 
-    # Combine new headers with data rows
+    # Collect formula/index text per column from camelot's header rows
+    col_formula = [''] * len(col_ranges)
+    for r in range(data_row_idx):
+        for c in range(df.shape[1]):
+            v = str(df.iloc[r, c]).strip()
+            if not v:
+                continue
+            # Check if this cell is formula-like (contains "=", plain index, or continuation like "+ 8")
+            if re.match(r'^[\d\s+=+]+$', v):
+                if col_formula[c]:
+                    col_formula[c] += '\n' + v
+                else:
+                    col_formula[c] = v
+
+    # Fix formula continuations: lines starting with "+" should join the nearest
+    # adjacent column that has a formula ending with "+" or containing "="
+    for c in range(len(col_formula)):
+        f = col_formula[c]
+        if not f:
+            continue
+        # Check if this is ONLY a continuation (all lines start with "+")
+        lines = f.split('\n')
+        if all(l.strip().startswith('+') for l in lines):
+            # Find nearest column with a formula containing "="
+            for neighbor in [c + 1, c - 1]:
+                if 0 <= neighbor < len(col_formula) and '=' in col_formula[neighbor]:
+                    col_formula[neighbor] += ' ' + f.replace('\n', ' ')
+                    col_formula[c] = ''
+                    break
+
+    # Combine label + formula into single header row (joined with \n)
+    header_row = [''] * len(col_ranges)
+    for ci in range(len(col_ranges)):
+        parts = [p for p in [new_labels[ci], col_formula[ci]] if p]
+        header_row[ci] = '\n'.join(parts)
+
+    # Build result: single header row + data rows
+    header_df = pd.DataFrame([header_row], columns=df.columns)
     data_rows = df.iloc[data_row_idx:].reset_index(drop=True)
-    header_df = pd.DataFrame(new_header, columns=df.columns)
     result = pd.concat([header_df, data_rows], ignore_index=True)
     return result
 
@@ -545,8 +571,11 @@ def find_label_cols_count(df):
 
 
 def _normalize_label(val):
-    """Normalize a row label for matching: strip, collapse whitespace."""
+    """Normalize a row label for matching: strip, collapse whitespace, remove footnotes."""
     s = str(val).strip()
+    # Remove footnote text (starts with "* " and is long explanatory text)
+    if s.startswith('*') and len(s) > 20:
+        return ''
     s = re.sub(r'\s+', ' ', s)
     return s
 
