@@ -51,14 +51,10 @@ should both be 64-bit Windows 10 or 11.
 ### Step 2: Install on any Windows machine (no Python needed)
 
 Copy `dist\mfin.exe` to the target machine (USB, network share, etc.), then
-double-click it or run from any folder:
+double-click it. A setup window appears with **Install** and **Uninstall**
+buttons. Click **Install** to register the right-click menu.
 
-```
-mfin.exe --install
-```
-
-This registers a right-click context menu entry for PDF files. No admin
-privileges required — it installs for the current user only.
+No admin privileges required — it installs for the current user only.
 
 ### Step 3: Use it
 
@@ -69,8 +65,4 @@ next to the PDF.
 
 ### Uninstall
 
-To remove the right-click menu entry:
-
-```
-mfin.exe --uninstall
-```
+Double-click `mfin.exe` again and click **Uninstall**.

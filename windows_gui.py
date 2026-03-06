@@ -100,10 +100,12 @@ REGISTRY_PATH = r"Software\Classes\SystemFileAssociations\.pdf\shell\MfinExtract
 
 
 def install_context_menu():
-    """Register the right-click context menu entry for PDF files (per-user)."""
+    """Register the right-click context menu entry for PDF files (per-user).
+
+    Returns a status message string.
+    """
     if sys.platform != "win32":
-        print("Context menu installation is only supported on Windows.")
-        sys.exit(1)
+        return "Context menu installation is only supported on Windows."
 
     import winreg
 
@@ -129,43 +131,87 @@ def install_context_menu():
         winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, f'{exe_path} "%1"')
         winreg.CloseKey(cmd_key)
 
-        print("Context menu installed successfully.")
-        print("Right-click any PDF to see 'Extract Tables (mfin)'.")
+        return "Context menu installed successfully.\nRight-click any PDF to see 'Extract Tables (mfin)'."
     except OSError as e:
-        print(f"Failed to install context menu: {e}")
-        sys.exit(1)
+        return f"Failed to install context menu: {e}"
 
 
 def uninstall_context_menu():
-    """Remove the right-click context menu entry."""
+    """Remove the right-click context menu entry.
+
+    Returns a status message string.
+    """
     if sys.platform != "win32":
-        print("Context menu removal is only supported on Windows.")
-        sys.exit(1)
+        return "Context menu removal is only supported on Windows."
 
     import winreg
 
     try:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH + r"\command")
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH)
-        print("Context menu removed successfully.")
+        return "Context menu removed successfully."
     except FileNotFoundError:
-        print("Context menu entry not found (already removed?).")
+        return "Context menu entry not found (already removed?)."
     except OSError as e:
-        print(f"Failed to remove context menu: {e}")
-        sys.exit(1)
+        return f"Failed to remove context menu: {e}"
+
+
+def show_setup_dialog():
+    """Show a simple GUI for installing/uninstalling the right-click menu."""
+    root = tk.Tk()
+    root.title("mfin — Setup")
+    root.geometry("400x200")
+    root.resizable(False, False)
+
+    tk.Label(
+        root,
+        text="mfin — PDF Table Extractor",
+        font=("", 14, "bold"),
+        pady=10,
+    ).pack()
+
+    tk.Label(
+        root,
+        text="Add or remove the right-click menu entry for PDF files.",
+        pady=5,
+    ).pack()
+
+    status_var = tk.StringVar()
+    status_label = tk.Label(root, textvariable=status_var, wraplength=360, pady=10)
+    status_label.pack()
+
+    btn_frame = tk.Frame(root)
+    btn_frame.pack(pady=5)
+
+    def on_install():
+        msg = install_context_menu()
+        status_var.set(msg)
+
+    def on_uninstall():
+        msg = uninstall_context_menu()
+        status_var.set(msg)
+
+    tk.Button(btn_frame, text="Install", width=12, command=on_install).pack(
+        side="left", padx=10
+    )
+    tk.Button(btn_frame, text="Uninstall", width=12, command=on_uninstall).pack(
+        side="left", padx=10
+    )
+
+    root.mainloop()
 
 
 def main():
     if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+        show_setup_dialog()
+        return
 
     arg = sys.argv[1]
 
     if arg == "--install":
-        install_context_menu()
+        print(install_context_menu())
     elif arg == "--uninstall":
-        uninstall_context_menu()
+        print(uninstall_context_menu())
     elif os.path.isfile(arg) and arg.lower().endswith(".pdf"):
         run_gui(arg)
     else:
