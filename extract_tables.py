@@ -300,6 +300,14 @@ def _should_merge_next(acc, next_row, label_cols):
     next_filled = sum(1 for e in next_empty if not e)
     overlap = sum(1 for ae, ne in zip(acc_empty, next_empty) if not ae and not ne)
 
+    acc_label = str(acc[0]).strip()
+
+    # Year-only label with sparse data: greedily merge to build complete month row.
+    # Handles three-way merge: "2023" + data-only row + "Јул" → "2023 Јул | data"
+    if re.match(r'^\d{4}$', acc_label) and acc_filled <= 2 and overlap == 0:
+        if not (next_label and _is_new_item_label(next_label)):
+            return True
+
     # If accumulated row has no data at all, it's an incomplete label row.
     # Merge with next unless next is clearly a new item.
     if acc_filled == 0:
@@ -312,8 +320,16 @@ def _should_merge_next(acc, next_row, label_cols):
         return False
 
     # Empty label with some data: overflow from previous row
+    # But not if data overlaps with an already well-filled row (likely a new row)
     if next_label == '' and next_filled > 0:
+        if overlap > 0 and acc_filled >= 3:
+            return False
         return True
+
+    # No-label accumulator with sparse data: merge with following labeled row
+    if not acc_label and acc_filled <= 2 and next_label and overlap == 0:
+        if not _is_new_item_label(next_label):
+            return True
 
     # If next label starts a new numbered/sectioned item, don't merge
     if next_label and _is_new_item_label(next_label):
