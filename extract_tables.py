@@ -109,12 +109,91 @@ def extract_single_page(pdf_path, page_num):
     return df
 
 
+def _is_new_item_label(label):
+    """Check if a label looks like the start of a new table row (not a continuation)."""
+    if re.match(r'^\d{4}(\s|$)', label):  # Year like "2023"
+        return True
+    if re.match(r'^\d+\.', label):  # Numbered item like "1." or "1.5"
+        return True
+    if re.match(r'^[IVX]+[\s.]', label):  # Roman numeral section like "III "
+        return True
+    return False
+
+
+def _should_merge_next(acc, next_row, label_cols):
+    """Determine if next_row is a continuation of acc (split by camelot).
+
+    Camelot splits wrapped cells into multiple rows, distributing data values
+    across them based on vertical position. The key signal is that the rows
+    have complementary (non-overlapping) data columns.
+    """
+    next_label = str(next_row[0]).strip()
+
+    acc_data = acc[label_cols:]
+    next_data = next_row[label_cols:]
+
+    acc_empty = [str(v).strip() == '' for v in acc_data]
+    next_empty = [str(v).strip() == '' for v in next_data]
+
+    acc_filled = sum(1 for e in acc_empty if not e)
+    next_filled = sum(1 for e in next_empty if not e)
+    overlap = sum(1 for ae, ne in zip(acc_empty, next_empty) if not ae and not ne)
+
+    # If accumulated row has no data at all, it's an incomplete label row.
+    # Merge with next unless next is clearly a new item.
+    if acc_filled == 0:
+        if next_label and _is_new_item_label(next_label):
+            return False
+        return True
+
+    # Too much overlap means these are separate rows
+    if overlap > 2:
+        return False
+
+    # Empty label with some data: overflow from previous row
+    if next_label == '' and next_filled > 0:
+        return True
+
+    # If next label starts a new numbered/sectioned item, don't merge
+    if next_label and _is_new_item_label(next_label):
+        return False
+
+    # Continuation label with no data: pure label wrap
+    if next_label and next_filled == 0:
+        return True
+
+    # Continuation label with sparse complementary data
+    if next_label and next_filled <= 2 and overlap <= 1:
+        return True
+
+    return False
+
+
+def _merge_rows(acc, next_row, label_cols):
+    """Merge next_row into acc: combine labels, prefer non-empty data values."""
+    merged = list(acc)
+
+    # Combine labels
+    next_label = str(next_row[0]).strip()
+    if next_label:
+        curr_label = str(merged[0]).strip()
+        merged[0] = (curr_label + ' ' + next_label) if curr_label else next_label
+
+    # Merge data: fill in empty cells from next_row
+    for c in range(label_cols, min(len(merged), len(next_row))):
+        if str(merged[c]).strip() == '' and str(next_row[c]).strip() != '':
+            merged[c] = next_row[c]
+
+    return merged
+
+
 def collapse_multiline_rows(df, label_cols=1):
     """Collapse rows where camelot split a multi-line cell into separate rows.
 
-    Pattern detected: a label-only row (text in col 0, all data cols empty)
-    followed by a data-only row (empty col 0, has data values), optionally
-    followed by more label-only rows. These are merged into a single row.
+    Handles multiple patterns:
+    - Label-only row + data-only row + optional label continuation
+    - Row with partial data + overflow row with complementary data
+    - Any combination where adjacent rows have non-overlapping data columns
     """
     if df.empty or len(df) < 2:
         return df
@@ -123,44 +202,18 @@ def collapse_multiline_rows(df, label_cols=1):
     result = []
     i = 0
     while i < len(rows):
-        row = rows[i]
-        label = str(row[0]).strip()
-        data_empty = all(str(v).strip() == '' for v in row[label_cols:])
-
-        if data_empty and label and i + 1 < len(rows):
-            # Check if next row is data-only (empty label, has data)
-            next_row = rows[i + 1]
-            next_label = str(next_row[0]).strip()
-            next_data_empty = all(str(v).strip() == '' for v in next_row[label_cols:])
-
-            if not next_data_empty and next_label == '':
-                # Split cell: label-only followed by data-only
-                merged = list(next_row)
-                merged[0] = label
-                i += 2
-                # Collect trailing label-only rows (continuation of the label)
-                while i < len(rows):
-                    trail = rows[i]
-                    trail_label = str(trail[0]).strip()
-                    trail_data_empty = all(str(v).strip() == '' for v in trail[label_cols:])
-                    if trail_data_empty and trail_label:
-                        # Check if this is actually the start of a NEW split group
-                        # (i.e. followed by a data-only row)
-                        if i + 1 < len(rows):
-                            peek = rows[i + 1]
-                            peek_label = str(peek[0]).strip()
-                            peek_data_empty = all(str(v).strip() == '' for v in peek[label_cols:])
-                            if not peek_data_empty and peek_label == '':
-                                break  # New split group, not a trailing label
-                        merged[0] = str(merged[0]) + ' ' + trail_label
-                        i += 1
-                    else:
-                        break
-                result.append(merged)
-                continue
-
-        result.append(row)
+        acc = list(rows[i])
         i += 1
+
+        # Greedily merge following rows that belong to the same logical row
+        while i < len(rows):
+            if _should_merge_next(acc, rows[i], label_cols):
+                acc = _merge_rows(acc, rows[i], label_cols)
+                i += 1
+            else:
+                break
+
+        result.append(acc)
 
     return pd.DataFrame(result, columns=df.columns).reset_index(drop=True)
 
@@ -302,12 +355,18 @@ def main():
     output_dir = os.path.join(script_dir, "tabele")
     pdf_dir = os.path.join(script_dir, "bilteni")
 
-    pdfs = sorted(glob.glob(os.path.join(pdf_dir, "*.pdf")))
+    if len(sys.argv) > 1:
+        # Process specific file(s) passed as arguments
+        pdfs = sys.argv[1:]
+    else:
+        # Process all PDFs in bilteni/
+        pdfs = sorted(glob.glob(os.path.join(pdf_dir, "*.pdf")))
+
     if not pdfs:
         print(f"No PDFs found in {pdf_dir}")
         sys.exit(1)
 
-    print(f"Found {len(pdfs)} PDF(s) in {pdf_dir}")
+    print(f"Processing {len(pdfs)} PDF(s)")
     for pdf_path in pdfs:
         process_pdf(pdf_path, output_dir)
 
