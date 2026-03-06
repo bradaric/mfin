@@ -94,3 +94,84 @@ def run_gui(pdf_path):
     """Launch the progress window for a single PDF."""
     window = ProgressWindow(pdf_path)
     window.run()
+
+
+REGISTRY_PATH = r"Software\Classes\SystemFileAssociations\.pdf\shell\MfinExtract"
+
+
+def install_context_menu():
+    """Register the right-click context menu entry for PDF files (per-user)."""
+    if sys.platform != "win32":
+        print("Context menu installation is only supported on Windows.")
+        sys.exit(1)
+
+    import winreg
+
+    exe_path = os.path.abspath(sys.executable)
+    # When frozen by PyInstaller, sys.executable is the .exe itself
+    # When running as script, point to this script via pythonw
+    if not getattr(sys, 'frozen', False):
+        exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+    else:
+        exe_path = f'"{exe_path}"'
+
+    try:
+        # Create shell key with display name
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH)
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Extract Tables (mfin)")
+        winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, "")
+        winreg.CloseKey(key)
+
+        # Create command subkey
+        cmd_key = winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, REGISTRY_PATH + r"\command"
+        )
+        winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, f'{exe_path} "%1"')
+        winreg.CloseKey(cmd_key)
+
+        print("Context menu installed successfully.")
+        print("Right-click any PDF to see 'Extract Tables (mfin)'.")
+    except OSError as e:
+        print(f"Failed to install context menu: {e}")
+        sys.exit(1)
+
+
+def uninstall_context_menu():
+    """Remove the right-click context menu entry."""
+    if sys.platform != "win32":
+        print("Context menu removal is only supported on Windows.")
+        sys.exit(1)
+
+    import winreg
+
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH + r"\command")
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH)
+        print("Context menu removed successfully.")
+    except FileNotFoundError:
+        print("Context menu entry not found (already removed?).")
+    except OSError as e:
+        print(f"Failed to remove context menu: {e}")
+        sys.exit(1)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    arg = sys.argv[1]
+
+    if arg == "--install":
+        install_context_menu()
+    elif arg == "--uninstall":
+        uninstall_context_menu()
+    elif os.path.isfile(arg) and arg.lower().endswith(".pdf"):
+        run_gui(arg)
+    else:
+        print(f"Unknown argument or file not found: {arg}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
