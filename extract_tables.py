@@ -610,11 +610,44 @@ def extract_horizontal_merge(pdf_path, page_nums):
         base_data_start = _find_data_start_row(base)
         extra_data_start = _find_data_start_row(extra)
 
+        # Detect duplicate label columns: continuation pages may repeat label columns
+        # (e.g. "Период"/"Укупно") that find_label_cols_count misses.
+        # Only skip columns that are both header-matched AND non-numeric in data rows.
+        skip = extra_label_cols
+        base_headers = set()
+        for c in range(base_label_cols, base.shape[1]):
+            for r in range(base_data_start):
+                v = str(base.iloc[r, c]).strip().split('\n')[0]
+                if v:
+                    base_headers.add(v)
+                    break
+        for c in range(extra_label_cols, extra.shape[1]):
+            header_val = ''
+            for r in range(extra_data_start):
+                v = str(extra.iloc[r, c]).strip().split('\n')[0]
+                if v:
+                    header_val = v
+                    break
+            if not (header_val and header_val in base_headers):
+                break  # Header doesn't match base — not a duplicate
+            # Check if this column has numeric data (→ real data column, not a label)
+            num_count = 0
+            check_count = 0
+            for r in range(extra_data_start, min(extra_data_start + 10, len(extra))):
+                v = str(extra.iloc[r, c]).strip().replace(' ', '')
+                if v:
+                    check_count += 1
+                    if re.match(r'^-?[\d,.\s]+$', v):
+                        num_count += 1
+            if check_count > 0 and num_count / check_count > 0.5:
+                break  # Numeric data column — not a duplicate
+            skip = c + 1
+
         # Align header rows by offset (positional — headers are consistent)
         offset = _find_alignment_offset(base, extra)
 
         # Number of new data columns from the continuation page
-        n_new_cols = extra.shape[1] - extra_label_cols
+        n_new_cols = extra.shape[1] - skip
 
         # Pre-fill new columns with empty strings
         new_col_start = base.shape[1]
@@ -628,16 +661,19 @@ def extract_horizontal_merge(pdf_path, page_nums):
             base_r = r + abs(offset) if offset < 0 else r
             if 0 <= extra_r < len(extra) and 0 <= base_r < len(base):
                 for i in range(n_new_cols):
-                    val = extra.iloc[extra_r, extra_label_cols + i]
+                    val = extra.iloc[extra_r, skip + i]
                     s = str(val).strip() if pd.notna(val) else ''
                     if s:
                         base.iloc[base_r, new_col_start + i] = val
+
+        # Use consistent label columns for matching (max of base and extra)
+        match_label_cols = max(base_label_cols, skip)
 
         # Build label index for data rows of the continuation page
         extra_label_index = {}
         for j in range(extra_data_start, len(extra)):
             parts = []
-            for c in range(extra_label_cols):
+            for c in range(min(match_label_cols, extra.shape[1])):
                 v = _normalize_label(extra.iloc[j, c])
                 if v:
                     parts.append(v)
@@ -648,7 +684,7 @@ def extract_horizontal_merge(pdf_path, page_nums):
         # Match base data rows to extra data rows by label
         for base_r in range(base_data_start, len(base)):
             parts = []
-            for c in range(base_label_cols):
+            for c in range(min(match_label_cols, base.shape[1])):
                 v = _normalize_label(base.iloc[base_r, c])
                 if v:
                     parts.append(v)
@@ -666,7 +702,7 @@ def extract_horizontal_merge(pdf_path, page_nums):
 
             if extra_r is not None:
                 for i in range(n_new_cols):
-                    base.iloc[base_r, new_col_start + i] = extra.iloc[extra_r, extra_label_cols + i]
+                    base.iloc[base_r, new_col_start + i] = extra.iloc[extra_r, skip + i]
 
     return base
 
