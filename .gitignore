@@ -1,0 +1,5 @@
+.venv/
+.idea/
+bilteni/
+tabele/
+__pycache__/

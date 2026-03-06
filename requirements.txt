@@ -1,0 +1,5 @@
+camelot-py[base]
+opencv-python-headless
+pandas
+openpyxl
+pdfplumber
