@@ -119,6 +119,8 @@ def _is_new_item_label(label):
     """Check if a label looks like the start of a new table row (not a continuation)."""
     if re.match(r'^\d{4}(\s|$)', label):  # Year like "2023"
         return True
+    if re.match(r'^\d+\.\d*\)', label):  # Closing paren like "1.6)" — NOT a new item
+        return False
     if re.match(r'^\d+\.', label):  # Numbered item like "1." or "1.5"
         return True
     if re.match(r'^[IVX]+[\s.]', label):  # Roman numeral section like "III "
@@ -418,6 +420,13 @@ def find_label_cols_count(df):
     return max(count, 1)  # At least 1 label column
 
 
+def _normalize_label(val):
+    """Normalize a row label for matching: strip, collapse whitespace."""
+    s = str(val).strip()
+    s = re.sub(r'\s+', ' ', s)
+    return s
+
+
 def _find_alignment_offset(base, extra):
     """Find row offset to align data rows between base and continuation page.
 
@@ -435,8 +444,27 @@ def _find_alignment_offset(base, extra):
     return 0
 
 
+def _build_label_index(df, label_cols):
+    """Build a mapping from normalized row label -> row index for matching."""
+    index = {}
+    for i in range(len(df)):
+        parts = []
+        for c in range(label_cols):
+            v = _normalize_label(df.iloc[i, c])
+            if v:
+                parts.append(v)
+        label = ' '.join(parts)
+        if label:
+            index[label] = i
+    return index
+
+
 def extract_horizontal_merge(pdf_path, page_nums):
-    """Extract a multi-page horizontal table and merge column-wise."""
+    """Extract a multi-page horizontal table and merge column-wise.
+
+    Uses label-based alignment so that rows missing on continuation pages
+    get empty data columns rather than shifting all subsequent rows.
+    """
     dfs = []
     for pg in page_nums:
         df = extract_single_page(pdf_path, pg)
@@ -449,34 +477,73 @@ def extract_horizontal_merge(pdf_path, page_nums):
 
     # First page is the base. Subsequent pages share label column(s) but add data columns.
     base = dfs[0]
+    base_label_cols = find_label_cols_count(base)
+
     for extra in dfs[1:]:
-        # Skip label columns on continuation pages
-        skip = find_label_cols_count(extra)
+        extra_label_cols = find_label_cols_count(extra)
 
-        # Align rows: continuation pages may have different header row counts
+        # Find header rows (before data) on each side
+        base_data_start = _find_data_start_row(base)
+        extra_data_start = _find_data_start_row(extra)
+
+        # Align header rows by offset (positional — headers are consistent)
         offset = _find_alignment_offset(base, extra)
-        if offset > 0:
-            # Extra has more header rows - trim its top to align
-            data_cols = extra.iloc[offset:, skip:]
-        elif offset < 0:
-            # Base has more header rows - pad extra with empty rows at top
-            data_cols = extra.iloc[:, skip:]
-            padding = pd.DataFrame(
-                [[''] * data_cols.shape[1]] * abs(offset),
-                columns=data_cols.columns,
-            )
-            data_cols = pd.concat([padding, data_cols], ignore_index=True)
-        else:
-            data_cols = extra.iloc[:, skip:]
 
-        # Align row count to base (trim or pad)
-        min_rows = min(len(base), len(data_cols))
-        data_cols = data_cols.iloc[:min_rows].reset_index(drop=True)
-        base = base.iloc[:min_rows].reset_index(drop=True)
-        # Append columns
+        # Number of new data columns from the continuation page
+        n_new_cols = extra.shape[1] - extra_label_cols
+
+        # Pre-fill new columns with empty strings
         new_col_start = base.shape[1]
-        for i, col in enumerate(data_cols.columns):
-            base[new_col_start + i] = data_cols[col].values
+        for i in range(n_new_cols):
+            base[new_col_start + i] = ''
+
+        # Fill header rows positionally (they are consistent across pages)
+        header_rows = max(base_data_start, extra_data_start)
+        for r in range(header_rows):
+            extra_r = r + offset if offset > 0 else r
+            base_r = r + abs(offset) if offset < 0 else r
+            if 0 <= extra_r < len(extra) and 0 <= base_r < len(base):
+                for i in range(n_new_cols):
+                    val = extra.iloc[extra_r, extra_label_cols + i]
+                    s = str(val).strip() if pd.notna(val) else ''
+                    if s:
+                        base.iloc[base_r, new_col_start + i] = val
+
+        # Build label index for data rows of the continuation page
+        extra_label_index = {}
+        for j in range(extra_data_start, len(extra)):
+            parts = []
+            for c in range(extra_label_cols):
+                v = _normalize_label(extra.iloc[j, c])
+                if v:
+                    parts.append(v)
+            label = ' '.join(parts)
+            if label:
+                extra_label_index[label] = j
+
+        # Match base data rows to extra data rows by label
+        for base_r in range(base_data_start, len(base)):
+            parts = []
+            for c in range(base_label_cols):
+                v = _normalize_label(base.iloc[base_r, c])
+                if v:
+                    parts.append(v)
+            base_label = ' '.join(parts)
+            if not base_label:
+                continue
+
+            # Try exact match first, then prefix match
+            extra_r = extra_label_index.get(base_label)
+            if extra_r is None:
+                for elabel, eidx in extra_label_index.items():
+                    if elabel.startswith(base_label[:20]) or base_label.startswith(elabel[:20]):
+                        extra_r = eidx
+                        break
+
+            if extra_r is not None:
+                for i in range(n_new_cols):
+                    base.iloc[base_r, new_col_start + i] = extra.iloc[extra_r, extra_label_cols + i]
+
     return base
 
 
