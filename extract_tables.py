@@ -480,6 +480,51 @@ def extract_horizontal_merge(pdf_path, page_nums):
     return base
 
 
+_TABELA_RE = re.compile(r'[TТ]абела\s+\d+[\s.:].{10,}', re.IGNORECASE)
+
+
+def _extract_title_from_page(page_text):
+    """Extract the table title line from page text (first 300 chars)."""
+    for line in page_text.split('\n'):
+        line = line.strip()
+        if _TABELA_RE.match(line):
+            return line
+    # Try joining first two lines (title may wrap)
+    lines = [l.strip() for l in page_text.split('\n') if l.strip()]
+    if len(lines) >= 2 and _TABELA_RE.match(lines[0] + ' ' + lines[1]):
+        return lines[0] + ' ' + lines[1]
+    return None
+
+
+def consolidate_title_row(df, title):
+    """Ensure the table has a dedicated title row as the first row.
+
+    If the extracted data already contains the title mixed into header cells,
+    remove it from there.  Then insert a clean title-only row at position 0.
+    """
+    if df.empty or not title:
+        return df
+
+    # Remove any existing title cell from the first few rows
+    for r in range(min(4, len(df))):
+        for c in range(df.shape[1]):
+            v = df.iloc[r, c]
+            if pd.notna(v) and isinstance(v, str) and _TABELA_RE.match(v.strip()):
+                df.iloc[r, c] = ''
+                break
+
+    # Insert title row at position 0
+    title_row = pd.DataFrame([[''] * df.shape[1]], columns=df.columns)
+    title_row.iloc[0, 0] = title
+    df = pd.concat([title_row, df], ignore_index=True)
+
+    # Drop rows that became fully empty after title removal
+    df = df[~df.apply(lambda row: all(str(v).strip() == '' or pd.isna(v) for v in row), axis=1)]
+    df = df.reset_index(drop=True)
+
+    return df
+
+
 def pick_files_tui(pdf_paths):
     """Show a terminal UI for selecting PDF files to process.
 
@@ -581,6 +626,10 @@ def process_pdf(pdf_path, output_dir):
                 if df.empty:
                     print("EMPTY!")
                     continue
+
+                # Consolidate table title into a dedicated first row
+                title = _extract_title_from_page(page_texts[pages[0]])
+                df = consolidate_title_row(df, title)
 
                 safe_sheet = tid[:31]
                 df.to_excel(writer, sheet_name=safe_sheet, index=False, header=False)
