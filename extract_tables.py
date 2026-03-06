@@ -67,8 +67,10 @@ def scan_pages(pdf_path):
     return page_texts
 
 
-def find_table_pages(page_texts):
+def find_table_pages(page_texts, log=None):
     """Find which pages contain which tables. Returns dict: (xlsx_name, table_id) -> [page_numbers]."""
+    if log is None:
+        log = print
     table_pages = {}
 
     for xlsx_name, table_defs in TABLE_PATTERNS.items():
@@ -84,7 +86,7 @@ def find_table_pages(page_texts):
             if pages:
                 table_pages[(xlsx_name, tid)] = pages
             else:
-                print(f"  WARNING: Could not find {xlsx_name}/{tid}")
+                log(f"  WARNING: Could not find {xlsx_name}/{tid}")
 
     return table_pages
 
@@ -653,23 +655,25 @@ def derive_bilten_id(pdf_filename):
     return match.group(1) if match else os.path.splitext(pdf_filename)[0]
 
 
-def process_pdf(pdf_path, output_dir):
+def process_pdf(pdf_path, output_dir, log=None):
     """Process a single PDF: extract all tables and write to Excel files."""
+    if log is None:
+        log = print
     bilten_id = derive_bilten_id(os.path.basename(pdf_path))
     out_dir = os.path.join(output_dir, bilten_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"\nProcessing: {pdf_path} -> {out_dir}/")
+    log(f"\nProcessing: {pdf_path} -> {out_dir}/")
 
     # Step 1: Scan pages to find table locations
-    print("  Scanning pages...")
+    log("  Scanning pages...")
     page_texts = scan_pages(pdf_path)
-    table_pages = find_table_pages(page_texts)
+    table_pages = find_table_pages(page_texts, log=log)
 
     # Step 2: Extract and write
     for xlsx_name, table_defs in TABLE_PATTERNS.items():
         xlsx_path = os.path.join(out_dir, f"{xlsx_name}.xlsx")
-        print(f"\n  Writing: {xlsx_path}")
+        log(f"\n  Writing: {xlsx_path}")
 
         with pd.ExcelWriter(xlsx_path, engine='openpyxl') as writer:
             for tdef in table_defs:
@@ -678,11 +682,11 @@ def process_pdf(pdf_path, output_dir):
                 pages = table_pages.get(key, [])
 
                 if not pages:
-                    print(f"    {tid}: SKIPPED (not found)")
+                    log(f"    {tid}: SKIPPED (not found)")
                     continue
 
                 is_multi = key in MULTI_PAGE_TABLES
-                print(f"    {tid} (pages {pages}, {'horizontal merge' if is_multi and len(pages) > 1 else 'single'})...", end=" ")
+                log(f"    {tid} (pages {pages}, {'horizontal merge' if is_multi and len(pages) > 1 else 'single'})...")
 
                 if is_multi and len(pages) > 1:
                     df = extract_horizontal_merge(pdf_path, pages)
@@ -691,7 +695,7 @@ def process_pdf(pdf_path, output_dir):
                     df = extract_single_page(pdf_path, pages[0])
 
                 if df.empty:
-                    print("EMPTY!")
+                    log("    EMPTY!")
                     continue
 
                 # Consolidate table title into a dedicated first row
@@ -700,9 +704,9 @@ def process_pdf(pdf_path, output_dir):
 
                 safe_sheet = tid[:31]
                 df.to_excel(writer, sheet_name=safe_sheet, index=False, header=False)
-                print(f"{df.shape[0]} rows x {df.shape[1]} cols")
+                log(f"    {df.shape[0]} rows x {df.shape[1]} cols")
 
-    print(f"\nDone: {bilten_id}")
+    log(f"\nDone: {bilten_id}")
 
 
 def main():
