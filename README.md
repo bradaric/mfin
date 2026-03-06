@@ -31,25 +31,46 @@ Output goes to `tabele/<bilten-id>/*.xlsx`.
 
 ## Windows — Right-Click Integration
 
-### Install
+Right-click any PDF on Windows → "Extract Tables (mfin)" → Excel files appear
+next to the PDF. No Python or command line needed on the target machine.
 
-1. Download `mfin.exe` from releases (or build it yourself, see below)
-2. Run: `mfin.exe --install`
-3. Right-click any PDF → "Extract Tables (mfin)"
+### Step 1: Build the .exe (one-time, on a Windows machine with Python)
 
-Output appears in a `tabele/` folder next to the PDF.
-
-### Uninstall
-
-```
-mfin.exe --uninstall
-```
-
-### Build from Source (Windows)
+You need one Windows machine with Python 3.10+ to build the executable.
+The build bundles Python and all dependencies into a single standalone file.
 
 ```bash
+git checkout feature/windows-gui
 pip install -r requirements.txt -r requirements-build.txt
 pyinstaller mfin.spec
 ```
 
-The `.exe` is created at `dist/mfin.exe`.
+This creates `dist\mfin.exe` (~50-100MB). The build machine and target machine
+should both be 64-bit Windows 10 or 11.
+
+### Step 2: Install on any Windows machine (no Python needed)
+
+Copy `dist\mfin.exe` to the target machine (USB, network share, etc.), then
+double-click it or run from any folder:
+
+```
+mfin.exe --install
+```
+
+This registers a right-click context menu entry for PDF files. No admin
+privileges required — it installs for the current user only.
+
+### Step 3: Use it
+
+Right-click any `.pdf` file → "Extract Tables (mfin)".
+
+A progress window shows extraction status. Output goes to a `tabele\` folder
+next to the PDF.
+
+### Uninstall
+
+To remove the right-click menu entry:
+
+```
+mfin.exe --uninstall
+```
