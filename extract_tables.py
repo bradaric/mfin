@@ -221,6 +221,23 @@ def _reconstruct_headers(camelot_table, pdf_path, page_num):
     return result
 
 
+_FOOTER_RE = re.compile(
+    r'(БИЛТЕН\s+[Јј]авних\s+финансија|Министарство\s+финансија)',
+    re.IGNORECASE,
+)
+
+
+def _drop_footer_rows(df):
+    """Remove rows that contain page footer text picked up by camelot."""
+    if df.empty:
+        return df
+    mask = df.apply(
+        lambda row: any(_FOOTER_RE.search(str(v)) for v in row),
+        axis=1,
+    )
+    return df[~mask].reset_index(drop=True)
+
+
 def extract_single_page(pdf_path, page_num):
     """Extract a table from a single PDF page using camelot stream mode."""
     tables = camelot.read_pdf(pdf_path, pages=str(page_num), flavor='stream')
@@ -236,6 +253,8 @@ def extract_single_page(pdf_path, page_num):
     df = df.loc[:, ~df.isna().all()]
     # Strip whitespace
     df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
+    # Drop page footer rows (page numbers, "БИЛТЕН ...", "Министарство финансија")
+    df = _drop_footer_rows(df)
     # Drop rows that are fully empty strings
     df = df[~df.apply(lambda row: all(v == '' for v in row), axis=1)].reset_index(drop=True)
     # Collapse multi-line rows split by camelot
