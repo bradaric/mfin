@@ -91,6 +91,110 @@ def find_table_pages(page_texts, log=None):
     return table_pages
 
 
+def _reconstruct_headers(camelot_table, pdf_path, page_num):
+    """Reconstruct header cells using pdfplumber word positions.
+
+    Camelot stream mode often misses text at the top of header cells.
+    This uses pdfplumber to extract all words in the header area and
+    maps them to camelot's column positions to build complete headers.
+    """
+    ct = camelot_table
+    df = ct.df
+    col_ranges = ct.cols  # list of (x0, x1) tuples
+
+    # Find the first data row in camelot's output
+    data_row_idx = _find_data_start_row(df)
+    if data_row_idx == 0:
+        return df  # Can't distinguish headers
+
+    # Get the y-coordinate boundary between headers and data (PDF coords, bottom-left origin)
+    header_bottom_y = ct.rows[data_row_idx][0]
+    table_top_y = ct._bbox[3]
+
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[page_num - 1]  # 0-indexed
+        page_height = float(page.height)
+        words = page.extract_words(keep_blank_chars=True, x_tolerance=3, y_tolerance=3)
+
+    # Map words to columns, filtering to header area only
+    # col_headers[col_idx] = [(y_pdf, text), ...] sorted top to bottom
+    col_headers = {i: [] for i in range(len(col_ranges))}
+
+    for w in words:
+        w_top_pdf = page_height - w['top']
+        w_bottom_pdf = page_height - w['bottom']
+        w_x_center = (w['x0'] + w['x1']) / 2
+        text = w['text'].strip()
+
+        if not text:
+            continue
+        # Must be in header area (above first data row)
+        # Extend well above table_top since camelot often underestimates
+        # the header boundary; cap at 50pt above table top to avoid page chrome
+        if w_bottom_pdf < header_bottom_y or w_top_pdf > table_top_y + 50:
+            continue
+        # Skip title text
+        if _TABELA_RE.match(text):
+            continue
+
+        # Find which column this word belongs to
+        for ci, (cx0, cx1) in enumerate(col_ranges):
+            if cx0 - 5 <= w_x_center <= cx1 + 5:
+                col_headers[ci].append((w_top_pdf, text))
+                break
+
+    # Build header text for each column by grouping words on the same line
+    for ci in col_headers:
+        entries = sorted(col_headers[ci], key=lambda x: -x[0])  # top to bottom
+        if not entries:
+            continue
+
+        # Group by y-position (words within 3pt are on the same line)
+        lines = []
+        current_line = [entries[0][1]]
+        current_y = entries[0][0]
+        for y, text in entries[1:]:
+            if abs(y - current_y) < 3:
+                current_line.append(text)
+            else:
+                lines.append(' '.join(current_line))
+                current_line = [text]
+                current_y = y
+        lines.append(' '.join(current_line))
+
+        # Separate formula line (like "1 = 2 + 3") from label lines
+        label_lines = []
+        formula_lines = []
+        for line in lines:
+            if re.match(r'^[\d\s+=+]+$', line.strip()):
+                formula_lines.append(line.strip())
+            else:
+                label_lines.append(line.strip())
+
+        col_headers[ci] = (
+            '\n'.join(label_lines) if label_lines else '',
+            '\n'.join(formula_lines) if formula_lines else '',
+        )
+
+    # Replace header rows: collapse into exactly 2 rows (labels, formulas)
+    new_header = [[''] * len(col_ranges) for _ in range(2)]
+    for ci, val in col_headers.items():
+        if isinstance(val, tuple):
+            new_header[0][ci] = val[0]
+            new_header[1][ci] = val[1]
+
+    # Check if pdfplumber found meaningful headers
+    total_labels = sum(1 for ci in col_headers if isinstance(col_headers[ci], tuple) and col_headers[ci][0])
+    if total_labels < 2:
+        return df  # Not enough header data, keep camelot's version
+
+    # Combine new headers with data rows
+    data_rows = df.iloc[data_row_idx:].reset_index(drop=True)
+    header_df = pd.DataFrame(new_header, columns=df.columns)
+    result = pd.concat([header_df, data_rows], ignore_index=True)
+    return result
+
+
 def extract_single_page(pdf_path, page_num):
     """Extract a table from a single PDF page using camelot stream mode."""
     tables = camelot.read_pdf(pdf_path, pages=str(page_num), flavor='stream')
@@ -98,7 +202,9 @@ def extract_single_page(pdf_path, page_num):
         print(f"  WARNING: No table found on page {page_num}")
         return pd.DataFrame()
     # Take the largest table if multiple found
-    df = max(tables, key=lambda t: t.df.size).df
+    ct = max(tables, key=lambda t: t.df.size)
+    # Reconstruct headers using pdfplumber word positions
+    df = _reconstruct_headers(ct, pdf_path, page_num)
     # Drop fully empty rows and columns
     df = df.dropna(how='all').reset_index(drop=True)
     df = df.loc[:, ~df.isna().all()]
@@ -179,20 +285,29 @@ def _should_merge_next(acc, next_row, label_cols):
     return False
 
 
-def _merge_rows(acc, next_row, label_cols):
-    """Merge next_row into acc: combine labels, prefer non-empty data values."""
+def _merge_rows(acc, next_row, label_cols, header=False):
+    """Merge next_row into acc: combine labels, prefer non-empty data values.
+
+    When header=True, concatenate overlapping cell values with newline
+    instead of discarding the later value.
+    """
     merged = list(acc)
 
     # Combine labels
     next_label = str(next_row[0]).strip()
     if next_label:
         curr_label = str(merged[0]).strip()
-        merged[0] = (curr_label + ' ' + next_label) if curr_label else next_label
+        sep = '\n' if header else ' '
+        merged[0] = (curr_label + sep + next_label) if curr_label else next_label
 
-    # Merge data: fill in empty cells from next_row
     for c in range(label_cols, min(len(merged), len(next_row))):
-        if str(merged[c]).strip() == '' and str(next_row[c]).strip() != '':
+        curr_val = str(merged[c]).strip()
+        next_val = str(next_row[c]).strip()
+        if not curr_val and next_val:
             merged[c] = next_row[c]
+        elif curr_val and next_val and header:
+            # In header rows, join multi-line cell content
+            merged[c] = curr_val + '\n' + next_val
 
     return merged
 
@@ -204,21 +319,28 @@ def collapse_multiline_rows(df, label_cols=1):
     - Label-only row + data-only row + optional label continuation
     - Row with partial data + overflow row with complementary data
     - Any combination where adjacent rows have non-overlapping data columns
+
+    Header rows (before the first data row) use newline-join for overlapping
+    cells so that multi-line header text like "Сектор\\nдржаве" is preserved.
     """
     if df.empty or len(df) < 2:
         return df
+
+    data_start = _find_data_start_row(df)
 
     rows = [list(r) for r in df.itertuples(index=False, name=None)]
     result = []
     i = 0
     while i < len(rows):
         acc = list(rows[i])
+        start_i = i
         i += 1
 
         # Greedily merge following rows that belong to the same logical row
         while i < len(rows):
             if _should_merge_next(acc, rows[i], label_cols):
-                acc = _merge_rows(acc, rows[i], label_cols)
+                in_header = (i < data_start)
+                acc = _merge_rows(acc, rows[i], label_cols, header=in_header)
                 i += 1
             else:
                 break
@@ -292,7 +414,7 @@ def _find_data_start_row(df):
     Skips formula/index rows like '1 = 2 + 9', '3', '4' which have small plain
     numbers.  Real data rows have formatted monetary values like '3.798.170,1'.
     """
-    for i in range(min(10, len(df))):
+    for i in range(min(20, len(df))):
         row = df.iloc[i]
         data_vals = 0
         for v in row:
@@ -579,7 +701,11 @@ def consolidate_title_row(df, title):
         for c in range(df.shape[1]):
             v = df.iloc[r, c]
             if pd.notna(v) and isinstance(v, str) and _TABELA_RE.match(v.strip()):
-                df.iloc[r, c] = ''
+                # Remove only the title line, keep any other content (e.g. header text
+                # that got merged into the same cell via newline)
+                lines = v.strip().split('\n')
+                remaining = [l for l in lines if not _TABELA_RE.match(l.strip())]
+                df.iloc[r, c] = '\n'.join(remaining) if remaining else ''
                 break
 
     # Insert title row at position 0
