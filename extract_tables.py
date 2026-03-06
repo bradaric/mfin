@@ -106,6 +106,8 @@ def extract_single_page(pdf_path, page_num):
     # Collapse multi-line rows split by camelot
     label_cols = find_label_cols_count(df)
     df = collapse_multiline_rows(df, label_cols=label_cols)
+    # Split merged year+month labels into separate columns for consistency
+    df, _ = split_year_month_column(df, label_cols)
     return df
 
 
@@ -216,6 +218,48 @@ def collapse_multiline_rows(df, label_cols=1):
         result.append(acc)
 
     return pd.DataFrame(result, columns=df.columns).reset_index(drop=True)
+
+
+MONTH_NAMES = (
+    'Јануар', 'Фебруар', 'Март', 'Maрт', 'Април', 'Мај', 'Јун',
+    'Јул', 'Август', 'Септембар', 'Октобар', 'Новембар', 'Децембар',
+)
+_YEAR_MONTH_RE = re.compile(
+    r'^(\d{4})\s+(' + '|'.join(MONTH_NAMES) + r'|Укупно)(.*)', re.IGNORECASE
+)
+
+
+def split_year_month_column(df, label_cols):
+    """If col 0 has merged 'YYYY Month' values, split into separate year + month columns.
+
+    This makes tables where year+month got merged in col 0 consistent with
+    tables (like Табела 5) where year and month are already in separate columns.
+    """
+    if df.empty:
+        return df, label_cols
+
+    col0 = df.iloc[:, 0].astype(str)
+    has_merged = col0.apply(lambda v: bool(_YEAR_MONTH_RE.match(v.strip()))).any()
+    if not has_merged:
+        return df, label_cols
+
+    # Insert a new year column at position 0
+    years = []
+    months = []
+    for val in col0:
+        m = _YEAR_MONTH_RE.match(val.strip())
+        if m:
+            years.append(m.group(1))
+            months.append(m.group(2) + m.group(3))
+        else:
+            years.append('')
+            months.append(val)
+
+    new_df = df.copy()
+    new_df.iloc[:, 0] = months
+    new_df.insert(0, 'year_col', years)
+    new_df.columns = range(len(new_df.columns))
+    return new_df, label_cols + 1
 
 
 def find_label_cols_count(df):
