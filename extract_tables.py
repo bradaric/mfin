@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import glob
+import curses
 
 import camelot
 import pandas as pd
@@ -356,6 +357,61 @@ def extract_horizontal_merge(pdf_path, page_nums):
     return base
 
 
+def pick_files_tui(pdf_paths):
+    """Show a terminal UI for selecting PDF files to process.
+
+    Arrow keys to navigate, Space to toggle, Enter to confirm, 'a' to toggle all, 'q' to quit.
+    Returns list of selected file paths.
+    """
+    labels = [os.path.basename(p) for p in pdf_paths]
+    selected = [False] * len(labels)
+
+    def draw(stdscr):
+        curses.curs_set(0)
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        current = 0
+
+        while True:
+            stdscr.clear()
+            h, w = stdscr.getmaxyx()
+            title = "Select PDF files to process (Space=toggle, a=all, Enter=confirm, q=quit)"
+            stdscr.addnstr(0, 0, title, w - 1, curses.A_BOLD)
+
+            for i, label in enumerate(labels):
+                if i + 2 >= h - 1:
+                    stdscr.addnstr(h - 1, 0, f"  ... and {len(labels) - i} more (scroll down)", w - 1)
+                    break
+                marker = "[x]" if selected[i] else "[ ]"
+                line = f"  {marker} {label}"
+                attr = curses.color_pair(1) | curses.A_BOLD if i == current else 0
+                stdscr.addnstr(i + 2, 0, line, w - 1, attr)
+
+            count = sum(selected)
+            footer = f"  {count} file(s) selected"
+            if 2 + len(labels) + 1 < h:
+                stdscr.addnstr(2 + len(labels) + 1, 0, footer, w - 1)
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key == curses.KEY_UP and current > 0:
+                current -= 1
+            elif key == curses.KEY_DOWN and current < len(labels) - 1:
+                current += 1
+            elif key == ord(' '):
+                selected[current] = not selected[current]
+            elif key == ord('a'):
+                toggle = not all(selected)
+                for i in range(len(selected)):
+                    selected[i] = toggle
+            elif key in (curses.KEY_ENTER, 10, 13):
+                return [pdf_paths[i] for i, s in enumerate(selected) if s]
+            elif key == ord('q'):
+                return []
+
+    return curses.wrapper(draw)
+
+
 def derive_bilten_id(pdf_filename):
     """Extract bilten identifier like '2025-10' from filename."""
     match = re.search(r'(\d{4}-\d{2})', pdf_filename)
@@ -415,9 +471,12 @@ def main():
     output_dir = os.path.join(script_dir, "tabele")
     pdf_dir = os.path.join(script_dir, "bilteni")
 
-    if len(sys.argv) > 1:
+    interactive = '-i' in sys.argv or '--interactive' in sys.argv
+    args = [a for a in sys.argv[1:] if a not in ('-i', '--interactive')]
+
+    if args:
         # Process specific file(s) passed as arguments
-        pdfs = sys.argv[1:]
+        pdfs = args
     else:
         # Process all PDFs in bilteni/
         pdfs = sorted(glob.glob(os.path.join(pdf_dir, "*.pdf")))
@@ -425,6 +484,12 @@ def main():
     if not pdfs:
         print(f"No PDFs found in {pdf_dir}")
         sys.exit(1)
+
+    if interactive:
+        pdfs = pick_files_tui(pdfs)
+        if not pdfs:
+            print("No files selected.")
+            sys.exit(0)
 
     print(f"Processing {len(pdfs)} PDF(s)")
     for pdf_path in pdfs:
