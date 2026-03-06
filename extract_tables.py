@@ -230,36 +230,52 @@ _YEAR_MONTH_RE = re.compile(
 
 
 def split_year_month_column(df, label_cols):
-    """If col 0 has merged 'YYYY Month' values, split into separate year + month columns.
+    """Split merged 'YYYY Month' values into separate year + month columns.
 
-    This makes tables where year+month got merged in col 0 consistent with
-    tables (like Табела 5) where year and month are already in separate columns.
+    Handles two cases:
+    1. Col 0 has merged values (e.g. "2024 Јун") — inserts a new year column.
+    2. Col 0 is already a year column but col 1 has merged values
+       (e.g. "2005 Укупно") — splits year into col 0, keeps rest in col 1.
     """
-    if df.empty:
+    if df.empty or df.shape[1] < 2:
         return df, label_cols
 
     col0 = df.iloc[:, 0].astype(str)
-    has_merged = col0.apply(lambda v: bool(_YEAR_MONTH_RE.match(v.strip()))).any()
-    if not has_merged:
-        return df, label_cols
+    col0_has_merged = col0.apply(lambda v: bool(_YEAR_MONTH_RE.match(v.strip()))).any()
 
-    # Insert a new year column at position 0
-    years = []
-    months = []
-    for val in col0:
-        m = _YEAR_MONTH_RE.match(val.strip())
-        if m:
-            years.append(m.group(1))
-            months.append(m.group(2) + m.group(3))
-        else:
-            years.append('')
-            months.append(val)
+    if col0_has_merged:
+        # Case 1: col 0 has merged year+month — insert a new year column
+        years = []
+        labels = []
+        for val in col0:
+            m = _YEAR_MONTH_RE.match(val.strip())
+            if m:
+                years.append(m.group(1))
+                labels.append(m.group(2) + m.group(3))
+            else:
+                years.append('')
+                labels.append(val)
 
-    new_df = df.copy()
-    new_df.iloc[:, 0] = months
-    new_df.insert(0, 'year_col', years)
-    new_df.columns = range(len(new_df.columns))
-    return new_df, label_cols + 1
+        new_df = df.copy()
+        new_df.iloc[:, 0] = labels
+        new_df.insert(0, 'year_col', years)
+        new_df.columns = range(len(new_df.columns))
+        return new_df, label_cols + 1
+
+    # Case 2: col 1 has merged year+month while col 0 is empty for those rows
+    col1 = df.iloc[:, 1].astype(str)
+    col1_has_merged = col1.apply(lambda v: bool(_YEAR_MONTH_RE.match(v.strip()))).any()
+
+    if col1_has_merged:
+        new_df = df.copy()
+        for idx, val in col1.items():
+            m = _YEAR_MONTH_RE.match(val.strip())
+            if m and str(new_df.iloc[idx, 0]).strip() == '':
+                new_df.iloc[idx, 0] = m.group(1)
+                new_df.iloc[idx, 1] = m.group(2) + m.group(3)
+        return new_df, label_cols
+
+    return df, label_cols
 
 
 def find_label_cols_count(df):
