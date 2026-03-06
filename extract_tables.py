@@ -107,7 +107,10 @@ def extract_single_page(pdf_path, page_num):
     # Collapse multi-line rows split by camelot
     label_cols = find_label_cols_count(df)
     df = collapse_multiline_rows(df, label_cols=label_cols)
+    # Merge columns split by camelot's handling of merged header cells
+    df = merge_split_columns(df)
     # Split merged year+month labels into separate columns for consistency
+    label_cols = find_label_cols_count(df)
     df, _ = split_year_month_column(df, label_cols)
     return df
 
@@ -277,6 +280,126 @@ def split_year_month_column(df, label_cols):
         return new_df, label_cols
 
     return df, label_cols
+
+
+def _find_data_start_row(df):
+    """Find the first row that looks like actual data (formatted numbers, not formula indices).
+
+    Skips formula/index rows like '1 = 2 + 9', '3', '4' which have small plain
+    numbers.  Real data rows have formatted monetary values like '3.798.170,1'.
+    """
+    for i in range(min(10, len(df))):
+        row = df.iloc[i]
+        data_vals = 0
+        for v in row:
+            s = str(v).strip().replace('\xa0', '')
+            if not s:
+                continue
+            # Must look like a formatted number (with thousands/decimal separators)
+            # not just a bare digit like "3" or a formula like "1 = 2 + 9"
+            if re.match(r'^-?[\d]+[.,][\d.,]+$', s.replace(' ', '')):
+                data_vals += 1
+        if data_vals >= 3:
+            return i
+    return 0
+
+
+def merge_split_columns(df):
+    """Merge adjacent column pairs split by camelot's stream mode.
+
+    When a PDF has merged header cells, camelot often creates two columns:
+    one with the header text (empty in data rows) and one with data values
+    (empty in header rows).  This detects such H_+_D pairs and merges them.
+    Also merges standalone header-only columns into their left neighbour.
+    """
+    if df.empty or df.shape[1] < 3:
+        return df
+
+    data_start = _find_data_start_row(df)
+    if data_start == 0:
+        return df  # Can't distinguish headers from data
+
+    n_cols = df.shape[1]
+
+    # Classify columns: 'H_' = header-only, '_D' = data-only, 'HD' = both
+    col_type = []
+    for c in range(n_cols):
+        has_header = False
+        for r in range(data_start):
+            v = df.iloc[r, c]
+            if pd.notna(v) and str(v).strip():
+                has_header = True
+                break
+        has_data = False
+        for r in range(data_start, min(data_start + 5, len(df))):
+            v = df.iloc[r, c]
+            if pd.notna(v) and str(v).strip():
+                has_data = True
+                break
+        if has_header and has_data:
+            col_type.append('HD')
+        elif has_header:
+            col_type.append('H_')
+        elif has_data:
+            col_type.append('_D')
+        else:
+            col_type.append('__')
+
+    # Build merge plan: list of column groups to merge
+    groups = []
+    c = 0
+    while c < n_cols:
+        if col_type[c] == 'H_' and c + 1 < n_cols and col_type[c + 1] == '_D':
+            # Header-only + data-only pair
+            groups.append((c, c + 1))
+            c += 2
+        elif col_type[c] == 'H_' and groups:
+            # Standalone header-only column: merge into previous group's header
+            prev = groups[-1]
+            groups[-1] = (*prev, c) if isinstance(prev, tuple) else (prev, c)
+            c += 1
+        else:
+            groups.append((c,))
+            c += 1
+
+    if len(groups) == n_cols:
+        return df  # Nothing to merge
+
+    # Build merged dataframe
+    rows = []
+    for r in range(len(df)):
+        new_row = []
+        for grp in groups:
+            if len(grp) == 1:
+                new_row.append(df.iloc[r, grp[0]])
+            elif len(grp) == 2:
+                a, b = grp
+                va = df.iloc[r, a]
+                vb = df.iloc[r, b]
+                sa = str(va).strip() if pd.notna(va) else ''
+                sb = str(vb).strip() if pd.notna(vb) else ''
+                if sa and sb:
+                    new_row.append(sa + ' ' + sb)
+                elif sa:
+                    new_row.append(va)
+                elif sb:
+                    new_row.append(vb)
+                else:
+                    new_row.append('')
+            else:
+                # 3+ columns merged (H_ + _D + trailing H_ columns)
+                vals = []
+                for idx in grp:
+                    v = df.iloc[r, idx]
+                    s = str(v).strip() if pd.notna(v) else ''
+                    if s:
+                        vals.append(s)
+                new_row.append(' '.join(vals) if vals else '')
+        rows.append(new_row)
+
+    result = pd.DataFrame(rows)
+    result.columns = range(len(result.columns))
+    return result
 
 
 def find_label_cols_count(df):
