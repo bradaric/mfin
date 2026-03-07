@@ -12,9 +12,6 @@ import threading
 import tkinter as tk
 from tkinter import scrolledtext
 
-from extract_tables import process_pdf
-
-
 class ProgressWindow:
     """A small tkinter window that shows extraction progress."""
 
@@ -82,6 +79,8 @@ class ProgressWindow:
 
     def _process(self):
         try:
+            from extract_tables import process_pdf
+
             output_dir = os.path.join(os.path.dirname(self.pdf_path), "tabele")
             process_pdf(self.pdf_path, output_dir, log=self.log)
             self.root.after(0, self._mark_done, True)
