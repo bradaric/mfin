@@ -2,16 +2,18 @@
 # PyInstaller spec for mfin Windows GUI
 # Build with: pyinstaller mfin.spec
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all
+
+cn_datas, cn_binaries, cn_hiddenimports = collect_all('charset_normalizer')
 
 a = Analysis(
     ['windows_gui.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
+    binaries=cn_binaries,
+    datas=cn_datas,
     hiddenimports=[
         'camelot', 'pdfplumber', 'pdfminer', 'pdfminer.high_level',
-    ] + collect_submodules('charset_normalizer'),
+    ] + cn_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
