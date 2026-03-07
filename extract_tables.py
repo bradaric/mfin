@@ -592,13 +592,18 @@ def merge_split_columns(df):
 
 
 def _parse_serbian_number(s):
-    """Parse a Serbian-formatted number string into a float.
+    """Parse a formatted number string into a float.
 
-    Serbian format uses '.' as thousands separator and ',' as decimal separator.
-    E.g. '3.798.170,1' -> 3798170.1, '-12.345,67' -> -12345.67
+    Handles multiple formats:
+    - Serbian: '.' as thousands sep, ',' as decimal sep (e.g. '3.798.170,1')
+    - Western: ',' as thousands sep, '.' as decimal sep (e.g. '3,798,170.1')
+    - Plain integer: '2711930'
+    - Decimal-only: '283361.9' or '283361,9'
+
+    Uses the last separator and digit-group length to auto-detect the format.
     Returns the float value, or the original string if it doesn't look like a number.
     """
-    s = str(s).strip().replace('\xa0', '').replace(' ', '')
+    s = str(s).strip().replace('\xa0', '').replace('\u200b', '').replace(' ', '')
     if not s:
         return s
     # Plain integer (no separators at all) — convert directly
@@ -610,23 +615,67 @@ def _parse_serbian_number(s):
     # Must look like a formatted number (digits with . and/or , separators)
     if not re.match(r'^-?[\d]+[.,][\d.,]+$', s):
         return s
-    # Remove thousands separators (dots) and replace decimal comma with dot
-    # Find the last comma — that's the decimal separator
-    if ',' in s:
-        # Everything before the last comma: remove dots (thousands sep)
-        last_comma = s.rfind(',')
+    # Auto-detect format based on the last separator character
+    last_dot = s.rfind('.')
+    last_comma = s.rfind(',')
+    if last_comma > last_dot:
+        # Last separator is comma → Serbian format (comma = decimal)
         integer_part = s[:last_comma].replace('.', '')
         decimal_part = s[last_comma + 1:]
         try:
             return float(f"{integer_part}.{decimal_part}")
         except ValueError:
             return s
+    elif last_dot > last_comma:
+        # Last separator is dot — check if it's a decimal or thousands separator
+        digits_after_dot = s[last_dot + 1:]
+        if len(digits_after_dot) == 3 and last_comma == -1 and s.count('.') > 1:
+            # Multiple dots, 3 digits after last → all dots are thousands seps
+            try:
+                return float(s.replace('.', ''))
+            except ValueError:
+                return s
+        else:
+            # Dot is decimal separator (Western format or plain decimal)
+            integer_part = s[:last_dot].replace(',', '')
+            decimal_part = s[last_dot + 1:]
+            try:
+                return float(f"{integer_part}.{decimal_part}")
+            except ValueError:
+                return s
     else:
-        # No comma — dots are thousands separators, no decimal part
-        try:
-            return float(s.replace('.', ''))
-        except ValueError:
-            return s
+        # Only one type of separator
+        if ',' in s:
+            # Only commas — treat last as decimal if not 3-digit group
+            last_comma = s.rfind(',')
+            after = s[last_comma + 1:]
+            if len(after) == 3 and s.count(',') > 1:
+                # All commas are thousands separators
+                try:
+                    return float(s.replace(',', ''))
+                except ValueError:
+                    return s
+            else:
+                integer_part = s[:last_comma].replace(',', '')
+                try:
+                    return float(f"{integer_part}.{after}")
+                except ValueError:
+                    return s
+        else:
+            # Only dots
+            last_dot = s.rfind('.')
+            after = s[last_dot + 1:]
+            if len(after) == 3 and s.count('.') > 1:
+                try:
+                    return float(s.replace('.', ''))
+                except ValueError:
+                    return s
+            else:
+                integer_part = s[:last_dot].replace('.', '')
+                try:
+                    return float(f"{integer_part}.{after}")
+                except ValueError:
+                    return s
 
 
 def convert_data_to_numbers(df):
