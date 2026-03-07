@@ -970,12 +970,16 @@ def process_pdf(pdf_path, output_dir, log=None):
                     log("    EMPTY!")
                     continue
 
-                # Consolidate table title into a dedicated first row
-                title = _extract_title_from_page(page_texts[pages[0]])
-                df = consolidate_title_row(df, title)
+                try:
+                    # Convert formatted number strings to actual numeric values
+                    # (must run before consolidate_title_row which shifts row indices)
+                    df = convert_data_to_numbers(df)
 
-                # Convert formatted number strings to actual numeric values
-                df = convert_data_to_numbers(df)
+                    # Consolidate table title into a dedicated first row
+                    title = _extract_title_from_page(page_texts[pages[0]])
+                    df = consolidate_title_row(df, title)
+                except Exception as e:
+                    log(f"    WARNING: post-processing failed ({e}), writing raw data")
 
                 safe_sheet = tid[:31]
                 df.to_excel(writer, sheet_name=safe_sheet, index=False, header=False)
