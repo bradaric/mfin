@@ -588,6 +588,51 @@ def merge_split_columns(df):
     return result
 
 
+def _parse_serbian_number(s):
+    """Parse a Serbian-formatted number string into a float.
+
+    Serbian format uses '.' as thousands separator and ',' as decimal separator.
+    E.g. '3.798.170,1' -> 3798170.1, '-12.345,67' -> -12345.67
+    Returns the float value, or the original string if it doesn't look like a number.
+    """
+    s = str(s).strip().replace('\xa0', '').replace(' ', '')
+    if not s:
+        return s
+    # Must look like a formatted number (digits with . and/or , separators)
+    if not re.match(r'^-?[\d]+[.,][\d.,]+$', s):
+        return s
+    # Remove thousands separators (dots) and replace decimal comma with dot
+    # Find the last comma — that's the decimal separator
+    if ',' in s:
+        # Everything before the last comma: remove dots (thousands sep)
+        last_comma = s.rfind(',')
+        integer_part = s[:last_comma].replace('.', '')
+        decimal_part = s[last_comma + 1:]
+        try:
+            return float(f"{integer_part}.{decimal_part}")
+        except ValueError:
+            return s
+    else:
+        # No comma — dots are thousands separators, no decimal part
+        try:
+            return float(s.replace('.', ''))
+        except ValueError:
+            return s
+
+
+def convert_data_to_numbers(df):
+    """Convert Serbian-formatted number strings in data cells to floats."""
+    if df.empty:
+        return df
+    data_start = _find_data_start_row(df)
+    label_cols = find_label_cols_count(df)
+    df = df.copy()
+    for r in range(data_start, len(df)):
+        for c in range(label_cols, df.shape[1]):
+            df.iloc[r, c] = _parse_serbian_number(df.iloc[r, c])
+    return df
+
+
 def find_label_cols_count(df):
     """Heuristic: count leading columns that are mostly non-numeric (label columns)."""
     count = 0
@@ -928,6 +973,9 @@ def process_pdf(pdf_path, output_dir, log=None):
                 # Consolidate table title into a dedicated first row
                 title = _extract_title_from_page(page_texts[pages[0]])
                 df = consolidate_title_row(df, title)
+
+                # Convert formatted number strings to actual numeric values
+                df = convert_data_to_numbers(df)
 
                 safe_sheet = tid[:31]
                 df.to_excel(writer, sheet_name=safe_sheet, index=False, header=False)
