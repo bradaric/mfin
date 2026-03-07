@@ -626,7 +626,7 @@ def convert_data_to_numbers(df):
         return df
     data_start = _find_data_start_row(df)
     label_cols = find_label_cols_count(df)
-    df = df.copy()
+    df = df.copy().astype(object)
     for r in range(data_start, len(df)):
         for c in range(label_cols, df.shape[1]):
             df.iloc[r, c] = _parse_serbian_number(df.iloc[r, c])
