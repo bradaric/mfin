@@ -1,1 +1,2 @@
+--no-binary charset-normalizer
 pyinstaller
