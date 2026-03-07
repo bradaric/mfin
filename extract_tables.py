@@ -482,8 +482,11 @@ def _find_data_start_row(df):
             if not s:
                 continue
             # Must look like a formatted number (with thousands/decimal separators)
-            # not just a bare digit like "3" or a formula like "1 = 2 + 9"
-            if re.match(r'^-?[\d]+[.,][\d.,]+$', s.replace(' ', '')):
+            # or a large plain integer (>= 5 digits, not a formula index like "3")
+            clean = s.replace(' ', '')
+            if re.match(r'^-?[\d]+[.,][\d.,]+$', clean):
+                data_vals += 1
+            elif re.match(r'^-?\d{5,}$', clean):
                 data_vals += 1
         if data_vals >= 3:
             return i
@@ -598,6 +601,12 @@ def _parse_serbian_number(s):
     s = str(s).strip().replace('\xa0', '').replace(' ', '')
     if not s:
         return s
+    # Plain integer (no separators at all) — convert directly
+    if re.match(r'^-?\d+$', s):
+        try:
+            return float(s)
+        except ValueError:
+            return s
     # Must look like a formatted number (digits with . and/or , separators)
     if not re.match(r'^-?[\d]+[.,][\d.,]+$', s):
         return s
