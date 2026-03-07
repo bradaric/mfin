@@ -853,7 +853,7 @@ def consolidate_title_row(df, title):
                 break
 
     # Insert title row at position 0
-    title_row = pd.DataFrame([[''] * df.shape[1]], columns=df.columns)
+    title_row = pd.DataFrame([[''] * df.shape[1]], columns=df.columns).astype(object)
     title_row.iloc[0, 0] = title
     df = pd.concat([title_row, df], ignore_index=True)
 
