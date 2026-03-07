@@ -5,7 +5,6 @@ import sys
 import os
 import re
 import glob
-import curses
 
 import camelot
 import pandas as pd
@@ -826,6 +825,8 @@ def pick_files_tui(pdf_paths):
     Arrow keys to navigate, Space to toggle, Enter to confirm, 'a' to toggle all, 'q' to quit.
     Returns list of selected file paths.
     """
+    import curses
+
     labels = [os.path.basename(p) for p in pdf_paths]
     selected = [False] * len(labels)
 
