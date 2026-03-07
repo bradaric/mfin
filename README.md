@@ -40,7 +40,6 @@ You need one Windows machine with Python 3.10+ to build the executable.
 The build bundles Python and all dependencies into a single standalone file.
 
 ```bash
-git checkout feature/windows-gui
 pip install -r requirements.txt -r requirements-build.txt
 pyinstaller mfin.spec
 ```
