@@ -7,7 +7,10 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['camelot', 'pdfplumber', 'pdfminer', 'pdfminer.high_level'],
+    hiddenimports=[
+        'camelot', 'pdfplumber', 'pdfminer', 'pdfminer.high_level',
+        'charset_normalizer', 'charset_normalizer.md__mypyc',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
