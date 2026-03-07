@@ -4,3 +4,5 @@ bilteni/
 tabele/
 __pycache__/
 .worktrees/
+dist/*
+build/*
