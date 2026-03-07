@@ -44,6 +44,15 @@ pip install -r requirements.txt -r requirements-build.txt
 pyinstaller mfin.spec
 ```
 
+The `requirements-build.txt` forces `charset-normalizer` to install as pure
+Python (no mypyc compiled extensions), which avoids a known PyInstaller
+bundling issue with mypyc hash-named modules. If you see
+`No module named '...__mypyc'` at runtime, reinstall with:
+
+```bash
+pip install charset-normalizer --no-binary charset-normalizer --force-reinstall
+```
+
 This creates `dist\mfin.exe` (~50-100MB). The build machine and target machine
 should both be 64-bit Windows 10 or 11.
 
