@@ -769,6 +769,76 @@ def _build_label_index(df, label_cols):
     return index
 
 
+def _repair_extra_labels(base, extra, base_label_cols, extra_label_cols,
+                          base_data_start, extra_data_start):
+    """Repair mismerged labels on a continuation page using base page as reference.
+
+    When collapse_multiline_rows incorrectly merges adjacent row labels on a
+    continuation page (e.g. "Социјална помоћ Остали трансфери" instead of
+    keeping "Социјална помоћ" and "Остали трансфери" separate), we detect this
+    by checking against the base page's known-good labels and fix them.
+
+    Handles two cases:
+    1. Extra label is two base labels concatenated → truncate to first label
+    2. Extra label is a suffix of a base label (e.g. "домаћинствима" from
+       "Остали трансфери домаћинствима") → expand to the full base label
+    """
+    # Build set of reference labels from base page
+    ref_labels = []
+    for r in range(base_data_start, len(base)):
+        parts = []
+        for c in range(base_label_cols):
+            v = _normalize_label(base.iloc[r, c])
+            if v:
+                parts.append(v)
+        label = ' '.join(parts)
+        if label:
+            ref_labels.append(label)
+    ref_set = set(ref_labels)
+
+    if not ref_set:
+        return extra
+
+    repaired = False
+    for r in range(extra_data_start, len(extra)):
+        parts = []
+        for c in range(extra_label_cols):
+            v = _normalize_label(extra.iloc[r, c])
+            if v:
+                parts.append(v)
+        elabel = ' '.join(parts)
+        if not elabel or elabel in ref_set:
+            continue
+
+        # Case 1: extra label = base_label_A + " " + (start of base_label_B)
+        # e.g. "Социјална помоћ Остали трансфери" contains "Социјална помоћ"
+        # Find the longest matching base label prefix.
+        best_match = ''
+        for ref in ref_labels:
+            if elabel.startswith(ref) and len(ref) > len(best_match):
+                # Verify it's a word boundary (space after the match or exact)
+                if len(elabel) == len(ref) or elabel[len(ref)] == ' ':
+                    best_match = ref
+        if best_match and len(best_match) < len(elabel):
+            logging.info("  Label repair: %r → %r (truncated)", elabel, best_match)
+            extra.iloc[r, 0] = best_match
+            repaired = True
+            continue
+
+        # Case 2: extra label is a suffix/fragment of a base label
+        # e.g. "домаћинствима" is the tail of "Остали трансфери домаћинствима"
+        for ref in ref_labels:
+            if ref.endswith(elabel) and ref != elabel:
+                logging.info("  Label repair: %r → %r (expanded)", elabel, ref)
+                extra.iloc[r, 0] = ref
+                repaired = True
+                break
+
+    if repaired:
+        logging.info("  Label repair applied on continuation page")
+    return extra
+
+
 def extract_horizontal_merge(pdf_path, page_nums):
     """Extract a multi-page horizontal table and merge column-wise.
 
@@ -854,6 +924,11 @@ def extract_horizontal_merge(pdf_path, page_nums):
 
         # Use consistent label columns for matching (max of base and extra)
         match_label_cols = max(base_label_cols, skip)
+
+        # Repair mismerged labels on continuation page using base as reference
+        extra = _repair_extra_labels(base, extra, base_label_cols,
+                                     extra_label_cols, base_data_start,
+                                     extra_data_start)
 
         # Build label index for data rows of the continuation page
         extra_label_index = {}
