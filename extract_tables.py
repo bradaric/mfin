@@ -408,6 +408,18 @@ def collapse_multiline_rows(df, label_cols=1):
 
         # Greedily merge following rows that belong to the same logical row
         while i < len(rows):
+            # Look-ahead: if this is a label-only row and the NEXT row starts
+            # with a lowercase letter, this label is the first half of a wrapped
+            # row header (e.g. "Остали трансфери" / "домаћинствима").  It belongs
+            # with the next row, not the current accumulator.
+            next_label = str(rows[i][0]).strip()
+            next_data = rows[i][label_cols:]
+            next_filled = sum(1 for v in next_data if str(v).strip())
+            if (next_label and next_filled == 0 and i + 1 < len(rows)):
+                following_label = str(rows[i + 1][0]).strip()
+                if following_label and following_label[0].islower():
+                    break  # start new accumulator with this row
+
             if _should_merge_next(acc, rows[i], label_cols):
                 in_header = (i < data_start)
                 acc = _merge_rows(acc, rows[i], label_cols, header=in_header)
