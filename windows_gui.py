@@ -97,9 +97,79 @@ def run_gui(pdf_path):
 
 REGISTRY_PATH = r"Software\Classes\SystemFileAssociations\.pdf\shell\MfinExtract"
 
+# Windows 11 hides legacy context menu items behind "Show more options".
+# This well-known registry key restores the full classic context menu.
+WIN11_CLASSIC_MENU_PATH = (
+    r"Software\Classes\CLSID"
+    r"\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+)
 
-def install_context_menu():
+
+def _is_windows_11():
+    """Check if running on Windows 11 (build >= 22000)."""
+    try:
+        ver = sys.getwindowsversion()
+        return ver.build >= 22000
+    except AttributeError:
+        return False
+
+
+def _enable_classic_context_menu():
+    """Apply registry tweak to show the full context menu on Windows 11.
+
+    Creates an empty InprocServer32 key that tells Explorer to use the
+    classic context menu instead of the simplified Windows 11 one.
+    Requires Explorer restart or log-off/log-on to take effect.
+    """
+    import winreg
+
+    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, WIN11_CLASSIC_MENU_PATH)
+    winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "")
+    winreg.CloseKey(key)
+
+
+def _disable_classic_context_menu():
+    """Remove the classic context menu registry tweak."""
+    import winreg
+
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, WIN11_CLASSIC_MENU_PATH)
+        # Clean up parent CLSID key if empty
+        parent = r"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}"
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, parent)
+    except OSError:
+        pass
+
+
+def _has_classic_context_menu():
+    """Check if the classic context menu tweak is already applied."""
+    import winreg
+
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, WIN11_CLASSIC_MENU_PATH)
+        winreg.CloseKey(key)
+        return True
+    except OSError:
+        return False
+
+
+def _restart_explorer():
+    """Restart Windows Explorer so context menu changes take effect."""
+    import subprocess
+
+    subprocess.run(
+        ["taskkill", "/f", "/im", "explorer.exe"],
+        capture_output=True,
+    )
+    subprocess.Popen(["explorer.exe"])
+
+
+def install_context_menu(fix_win11=False):
     """Register the right-click context menu entry for PDF files (per-user).
+
+    Args:
+        fix_win11: If True, also apply the Windows 11 classic context menu
+            tweak so the entry is visible without clicking "Show more options".
 
     Returns a status message string.
     """
@@ -130,13 +200,26 @@ def install_context_menu():
         winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, f'{exe_path} "%1"')
         winreg.CloseKey(cmd_key)
 
-        return "Context menu installed successfully.\nRight-click any PDF to see 'Extract Tables (mfin)'."
+        msg = "Context menu installed successfully.\nRight-click any PDF to see 'Extract Tables (mfin)'."
+
+        if fix_win11:
+            _enable_classic_context_menu()
+            _restart_explorer()
+            msg += (
+                "\n\nWindows 11 fix applied: classic context menu restored."
+                "\nExplorer has been restarted for changes to take effect."
+            )
+
+        return msg
     except OSError as e:
         return f"Failed to install context menu: {e}"
 
 
-def uninstall_context_menu():
+def uninstall_context_menu(undo_win11_fix=False):
     """Remove the right-click context menu entry.
+
+    Args:
+        undo_win11_fix: If True, also remove the classic context menu tweak.
 
     Returns a status message string.
     """
@@ -148,18 +231,28 @@ def uninstall_context_menu():
     try:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH + r"\command")
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH)
-        return "Context menu removed successfully."
+        msg = "Context menu removed successfully."
     except FileNotFoundError:
-        return "Context menu entry not found (already removed?)."
+        msg = "Context menu entry not found (already removed?)."
     except OSError as e:
         return f"Failed to remove context menu: {e}"
+
+    if undo_win11_fix and _has_classic_context_menu():
+        _disable_classic_context_menu()
+        _restart_explorer()
+        msg += (
+            "\nWindows 11 classic menu fix removed."
+            "\nExplorer has been restarted for changes to take effect."
+        )
+
+    return msg
 
 
 def show_setup_dialog():
     """Show a simple GUI for installing/uninstalling the right-click menu."""
     root = tk.Tk()
     root.title("mfin — Setup")
-    root.geometry("400x200")
+    root.geometry("420x250")
     root.resizable(False, False)
 
     tk.Label(
@@ -175,19 +268,31 @@ def show_setup_dialog():
         pady=5,
     ).pack()
 
+    # Windows 11 checkbox — only shown on Win11
+    win11_var = tk.BooleanVar(value=_is_windows_11())
+    if _is_windows_11():
+        win11_check = tk.Checkbutton(
+            root,
+            text="Show in top-level menu on Windows 11\n"
+                 "(restores classic right-click menu, restarts Explorer)",
+            variable=win11_var,
+            justify="left",
+        )
+        win11_check.pack(pady=(0, 5))
+
     status_var = tk.StringVar()
-    status_label = tk.Label(root, textvariable=status_var, wraplength=360, pady=10)
+    status_label = tk.Label(root, textvariable=status_var, wraplength=380, pady=10)
     status_label.pack()
 
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=5)
 
     def on_install():
-        msg = install_context_menu()
+        msg = install_context_menu(fix_win11=win11_var.get())
         status_var.set(msg)
 
     def on_uninstall():
-        msg = uninstall_context_menu()
+        msg = uninstall_context_menu(undo_win11_fix=win11_var.get())
         status_var.set(msg)
 
     tk.Button(btn_frame, text="Install", width=12, command=on_install).pack(
