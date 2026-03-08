@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import glob
+import logging
 
 import camelot
 import pandas as pd
@@ -314,13 +315,9 @@ def _should_merge_next(acc, next_row, label_cols):
             return False
         return True
 
-    # Too much overlap means these are separate rows —
-    # UNLESS the next label starts with a lowercase letter, indicating a
-    # wrapped row header (e.g. "домаћинствима" continuing "Остали трансфери").
-    # In Serbian tables, new row labels always start uppercase or with a digit.
+    # Too much overlap means these are separate rows
     if overlap > 2:
-        if not (next_label and next_label[0].islower()):
-            return False
+        return False
 
     # Empty label with some data: overflow from previous row
     # But not if data overlaps with an already well-filled row (likely a new row)
@@ -344,12 +341,6 @@ def _should_merge_next(acc, next_row, label_cols):
 
     # Continuation label with sparse complementary data
     if next_label and next_filled <= 2 and overlap <= 1:
-        return True
-
-    # Wrapped row header: label starts with lowercase letter, meaning it's a
-    # continuation of the previous label that wrapped across lines in the PDF.
-    # New row labels always start with uppercase or a digit in Serbian tables.
-    if next_label and next_label[0].islower():
         return True
 
     return False
@@ -408,16 +399,23 @@ def collapse_multiline_rows(df, label_cols=1):
 
         # Greedily merge following rows that belong to the same logical row
         while i < len(rows):
-            # Look-ahead: if this is a label-only row and the NEXT row starts
-            # with a lowercase letter, this label is the first half of a wrapped
-            # row header (e.g. "Остали трансфери" / "домаћинствима").  It belongs
-            # with the next row, not the current accumulator.
+            # Look-ahead: detect a wrapped row header that camelot split into
+            # multiple rows.  When a label wraps in the PDF, camelot produces:
+            #   row A: "Остали трансфери"  (no data)  — first line of label
+            #   row B: ""                   (data)     — numbers between lines
+            #   row C: "домаћинствима"      (no data)  — second line of label
+            # We look past empty-label data rows for a lowercase continuation.
             next_label = str(rows[i][0]).strip()
             next_data = rows[i][label_cols:]
             next_filled = sum(1 for v in next_data if str(v).strip())
-            if (next_label and next_filled == 0 and i + 1 < len(rows)):
-                following_label = str(rows[i + 1][0]).strip()
-                if following_label and following_label[0].islower():
+            if next_label and next_filled == 0:
+                is_wrapped = False
+                for k in range(i + 1, min(i + 4, len(rows))):
+                    fl = str(rows[k][0]).strip()
+                    if fl:
+                        is_wrapped = fl[0].islower()
+                        break
+                if is_wrapped:
                     break  # start new accumulator with this row
 
             if _should_merge_next(acc, rows[i], label_cols):
@@ -891,6 +889,11 @@ def extract_horizontal_merge(pdf_path, page_nums):
             if extra_r is not None:
                 for i in range(n_new_cols):
                     base.iloc[base_r, new_col_start + i] = extra.iloc[extra_r, skip + i]
+            else:
+                if base_label and len(base_label) > 3:
+                    logging.warning(
+                        "  Horizontal merge: no match for base label %r", base_label
+                    )
 
     return base
 
