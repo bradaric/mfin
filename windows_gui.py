@@ -97,12 +97,20 @@ def run_gui(pdf_path):
 
 REGISTRY_PATH = r"Software\Classes\SystemFileAssociations\.pdf\shell\MfinExtract"
 
-# Windows 11 hides legacy context menu items behind "Show more options".
-# This well-known registry key restores the full classic context menu.
-WIN11_CLASSIC_MENU_PATH = (
-    r"Software\Classes\CLSID"
-    r"\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
-)
+# CLSID for our IExplorerCommand shell extension (stable, generated once).
+SHELL_EXT_CLSID = "{e7a20a14-3b78-4d9a-9c12-5f4b8a3e6d01}"
+
+# Per-user COM class registration path.
+CLSID_REG_PATH = rf"Software\Classes\CLSID\{SHELL_EXT_CLSID}"
+
+
+def _get_shell_ext_dll_path():
+    """Return expected path of mfin_shell.dll next to the executable."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "mfin_shell.dll")
 
 
 def _is_windows_11():
@@ -114,62 +122,72 @@ def _is_windows_11():
         return False
 
 
-def _enable_classic_context_menu():
-    """Apply registry tweak to show the full context menu on Windows 11.
+def _shell_ext_available():
+    """Check if the shell extension DLL is present."""
+    return os.path.isfile(_get_shell_ext_dll_path())
 
-    Creates an empty InprocServer32 key that tells Explorer to use the
-    classic context menu instead of the simplified Windows 11 one.
-    Requires Explorer restart or log-off/log-on to take effect.
+
+def _register_shell_extension():
+    """Register the IExplorerCommand COM DLL per-user for .pdf files.
+
+    Sets ExplorerCommandHandler on the shell verb so Windows 11 uses the
+    COM DLL for the modern context menu, while Win10 ignores it and uses
+    the command subkey as a fallback.
     """
     import winreg
 
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, WIN11_CLASSIC_MENU_PATH)
-    winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "")
+    dll_path = _get_shell_ext_dll_path()
+
+    # Register CLSID -> InprocServer32 pointing to our DLL
+    inproc_path = CLSID_REG_PATH + r"\InprocServer32"
+    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, inproc_path)
+    winreg.SetValueEx(key, "", 0, winreg.REG_SZ, dll_path)
+    winreg.SetValueEx(key, "ThreadingModel", 0, winreg.REG_SZ, "Apartment")
+    winreg.CloseKey(key)
+
+    # Point the shell verb to our COM handler via ExplorerCommandHandler.
+    # Windows 11 uses this for the modern context menu; Win10 ignores it
+    # and falls through to the command subkey.
+    key = winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, winreg.KEY_SET_VALUE
+    )
+    winreg.SetValueEx(
+        key, "ExplorerCommandHandler", 0, winreg.REG_SZ, SHELL_EXT_CLSID
+    )
     winreg.CloseKey(key)
 
 
-def _disable_classic_context_menu():
-    """Remove the classic context menu registry tweak."""
+def _unregister_shell_extension():
+    """Remove per-user COM registration for the shell extension."""
     import winreg
 
+    # Remove ExplorerCommandHandler from the shell verb
     try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, WIN11_CLASSIC_MENU_PATH)
-        # Clean up parent CLSID key if empty
-        parent = r"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}"
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, parent)
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, winreg.KEY_SET_VALUE
+        )
+        winreg.DeleteValue(key, "ExplorerCommandHandler")
+        winreg.CloseKey(key)
     except OSError:
         pass
 
-
-def _has_classic_context_menu():
-    """Check if the classic context menu tweak is already applied."""
-    import winreg
-
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, WIN11_CLASSIC_MENU_PATH)
-        winreg.CloseKey(key)
-        return True
-    except OSError:
-        return False
+    # Remove CLSID registration
+    for path in [
+        CLSID_REG_PATH + r"\InprocServer32",
+        CLSID_REG_PATH,
+    ]:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+        except OSError:
+            pass
 
 
-def _restart_explorer():
-    """Restart Windows Explorer so context menu changes take effect."""
-    import subprocess
-
-    subprocess.run(
-        ["taskkill", "/f", "/im", "explorer.exe"],
-        capture_output=True,
-    )
-    subprocess.Popen(["explorer.exe"])
-
-
-def install_context_menu(fix_win11=False):
+def install_context_menu():
     """Register the right-click context menu entry for PDF files (per-user).
 
-    Args:
-        fix_win11: If True, also apply the Windows 11 classic context menu
-            tweak so the entry is visible without clicking "Show more options".
+    On Windows 11 with the shell extension DLL present, registers the COM
+    IExplorerCommand so the item appears in the modern context menu.
+    Otherwise falls back to the classic registry approach.
 
     Returns a status message string.
     """
@@ -179,21 +197,18 @@ def install_context_menu(fix_win11=False):
     import winreg
 
     exe_path = os.path.abspath(sys.executable)
-    # When frozen by PyInstaller, sys.executable is the .exe itself
-    # When running as script, point to this script via pythonw
-    if not getattr(sys, 'frozen', False):
+    if not getattr(sys, "frozen", False):
         exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
     else:
         exe_path = f'"{exe_path}"'
 
     try:
-        # Create shell key with display name
+        # Always register the classic shell entry (works on Win10, fallback on Win11)
         key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH)
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Extract Tables (mfin)")
         winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, "")
         winreg.CloseKey(key)
 
-        # Create command subkey
         cmd_key = winreg.CreateKey(
             winreg.HKEY_CURRENT_USER, REGISTRY_PATH + r"\command"
         )
@@ -202,12 +217,14 @@ def install_context_menu(fix_win11=False):
 
         msg = "Context menu installed successfully.\nRight-click any PDF to see 'Extract Tables (mfin)'."
 
-        if fix_win11:
-            _enable_classic_context_menu()
-            _restart_explorer()
+        # On Windows 11, also register the shell extension for the modern menu
+        if _is_windows_11() and _shell_ext_available():
+            _register_shell_extension()
+            msg += "\n\nWindows 11: registered shell extension for top-level menu."
+        elif _is_windows_11():
             msg += (
-                "\n\nWindows 11 fix applied: classic context menu restored."
-                "\nExplorer has been restarted for changes to take effect."
+                "\n\nNote: mfin_shell.dll not found — on Windows 11 the menu item"
+                "\nwill appear under 'Show more options'."
             )
 
         return msg
@@ -215,11 +232,8 @@ def install_context_menu(fix_win11=False):
         return f"Failed to install context menu: {e}"
 
 
-def uninstall_context_menu(undo_win11_fix=False):
+def uninstall_context_menu():
     """Remove the right-click context menu entry.
-
-    Args:
-        undo_win11_fix: If True, also remove the classic context menu tweak.
 
     Returns a status message string.
     """
@@ -237,14 +251,7 @@ def uninstall_context_menu(undo_win11_fix=False):
     except OSError as e:
         return f"Failed to remove context menu: {e}"
 
-    if undo_win11_fix and _has_classic_context_menu():
-        _disable_classic_context_menu()
-        _restart_explorer()
-        msg += (
-            "\nWindows 11 classic menu fix removed."
-            "\nExplorer has been restarted for changes to take effect."
-        )
-
+    _unregister_shell_extension()
     return msg
 
 
@@ -252,7 +259,7 @@ def show_setup_dialog():
     """Show a simple GUI for installing/uninstalling the right-click menu."""
     root = tk.Tk()
     root.title("mfin — Setup")
-    root.geometry("420x250")
+    root.geometry("400x200")
     root.resizable(False, False)
 
     tk.Label(
@@ -268,31 +275,19 @@ def show_setup_dialog():
         pady=5,
     ).pack()
 
-    # Windows 11 checkbox — only shown on Win11
-    win11_var = tk.BooleanVar(value=_is_windows_11())
-    if _is_windows_11():
-        win11_check = tk.Checkbutton(
-            root,
-            text="Show in top-level menu on Windows 11\n"
-                 "(restores classic right-click menu, restarts Explorer)",
-            variable=win11_var,
-            justify="left",
-        )
-        win11_check.pack(pady=(0, 5))
-
     status_var = tk.StringVar()
-    status_label = tk.Label(root, textvariable=status_var, wraplength=380, pady=10)
+    status_label = tk.Label(root, textvariable=status_var, wraplength=360, pady=10)
     status_label.pack()
 
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=5)
 
     def on_install():
-        msg = install_context_menu(fix_win11=win11_var.get())
+        msg = install_context_menu()
         status_var.set(msg)
 
     def on_uninstall():
-        msg = uninstall_context_menu(undo_win11_fix=win11_var.get())
+        msg = uninstall_context_menu()
         status_var.set(msg)
 
     tk.Button(btn_frame, text="Install", width=12, command=on_install).pack(

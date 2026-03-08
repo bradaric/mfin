@@ -39,6 +39,25 @@ next to the PDF. No Python or command line needed on the target machine.
 You need one Windows machine with Python 3.10+ to build the executable.
 The build bundles Python and all dependencies into a single standalone file.
 
+#### Optional: Build the Windows 11 shell extension
+
+On Windows 11, right-click menu items registered via the classic registry
+approach are hidden behind "Show more options". To make the menu item appear
+directly in the modern context menu, build the shell extension DLL (requires
+[Rust](https://rustup.rs/)):
+
+```bash
+cd shell_extension
+cargo build --release
+cd ..
+```
+
+This produces `shell_extension\target\release\mfin_shell.dll`, which PyInstaller
+will automatically bundle into the .exe. If the DLL is not present, the build
+still works — the menu item just appears under "Show more options" on Windows 11.
+
+#### Build the .exe
+
 ```bash
 pip install -r requirements.txt -r requirements-build.txt
 pyinstaller mfin.spec
