@@ -314,9 +314,13 @@ def _should_merge_next(acc, next_row, label_cols):
             return False
         return True
 
-    # Too much overlap means these are separate rows
+    # Too much overlap means these are separate rows —
+    # UNLESS the next label starts with a lowercase letter, indicating a
+    # wrapped row header (e.g. "домаћинствима" continuing "Остали трансфери").
+    # In Serbian tables, new row labels always start uppercase or with a digit.
     if overlap > 2:
-        return False
+        if not (next_label and next_label[0].islower()):
+            return False
 
     # Empty label with some data: overflow from previous row
     # But not if data overlaps with an already well-filled row (likely a new row)
@@ -340,6 +344,12 @@ def _should_merge_next(acc, next_row, label_cols):
 
     # Continuation label with sparse complementary data
     if next_label and next_filled <= 2 and overlap <= 1:
+        return True
+
+    # Wrapped row header: label starts with lowercase letter, meaning it's a
+    # continuation of the previous label that wrapped across lines in the PDF.
+    # New row labels always start with uppercase or a digit in Serbian tables.
+    if next_label and next_label[0].islower():
         return True
 
     return False
