@@ -40,7 +40,7 @@ TABLE_PATTERNS = {
         {"id": "Табела 2", "pattern": r"Табела 2\.?\s*Издаци буџета општина"},
     ],
     "04_ooso": [
-        {"id": "Табела 1", "pattern": r"Табела 1\.?\s*Примања РФПИО"},
+        {"id": "Табела 1", "pattern": r"Табела 1\.?\s*Примања РФПИ[ОO]"},
         {"id": "Табела 2", "pattern": r"Табела 2\.?\s*Издаци РФПИО"},
         {"id": "Табела 3", "pattern": r"Табела 3\.?\s*Примања Републичког фонда за здравствено"},
         {"id": "Табела 4", "pattern": r"Табела 4\.?\s*Издаци Републичког фонда за здравствено"},
@@ -717,9 +717,10 @@ def find_label_cols_count(df):
     for col in df.columns:
         vals = df[col].dropna().astype(str)
         vals = vals[vals != '']
-        numeric_count = vals.apply(
-            lambda v: bool(re.match(r'^-?[\d,.\s]+$', v.replace(' ', '')))
-        ).sum()
+        numeric_count = sum(
+            bool(re.match(r'^-?[\d,.\s]+$', v.replace(' ', '')))
+            for v in vals
+        )
         if numeric_count / max(len(vals), 1) < 0.5:
             count += 1
         else:
