@@ -4,6 +4,7 @@
 import sys
 import os
 import re
+import unicodedata
 import glob
 import logging
 
@@ -12,40 +13,39 @@ import pandas as pd
 import pdfplumber
 
 
-# Table signatures used to find pages dynamically.
-# Each entry: (title_pattern, is_continuation_pattern)
-# A "continuation" page has "наставак" in the title and belongs to the previous table.
+# Canonical Cyrillic title prefixes. Matching folds case, whitespace, the
+# Tabela/Табела token, and Latin/Cyrillic lookalikes. Do not put regex here.
 TABLE_PATTERNS = {
     "00_fiskalna_kretanja": [
-        {"id": "Табела 1", "pattern": r"Табела 1[:\.]?\s*Консолидовани биланс државе у периоду"},
-        {"id": "Табела 2", "pattern": r"Табела 2\.?\s*Консолидовани биланс државе по нивоима"},
+        {"id": "Табела 1", "title": "Табела 1. Консолидовани биланс државе у периоду"},
+        {"id": "Табела 2", "title": "Табела 2. Консолидовани биланс државе по нивоима"},
     ],
     "01_budzet_rs": [
-        {"id": "Табела 3", "pattern": r"[TТ]абела 3\.?\s*Примања и издаци буџета"},
-        {"id": "Табела 4", "pattern": r"[TТ]абела 4\.?\s*Порески приходи"},
-        {"id": "Табела 5", "pattern": r"[TТ]абела 5\.?\s*Порез на додату вредност"},
-        {"id": "Табела 6", "pattern": r"[TТ]абела 6\.?\s*Непорески приходи"},
-        {"id": "Табела 7", "pattern": r"[TТ]абела 7\.?\s*Укупни издаци буџета"},
-        {"id": "Табела 8", "pattern": r"[TТ]абела 8\.?\s*Укупни расходи за запослене"},
-        {"id": "Табела 9", "pattern": r"[TТ]абела 9\.?\s*Расходи по основу отплате камата"},
-        {"id": "Табела 10", "pattern": r"[TТ]абела 10\.?\s*Субвенције из буџета"},
-        {"id": "Табела 11", "pattern": r"[TТ]абела 11\.?\s*Донације и трансфери из буџета"},
+        {"id": "Табела 3", "title": "Табела 3. Примања и издаци буџета"},
+        {"id": "Табела 4", "title": "Табела 4. Порески приходи"},
+        {"id": "Табела 5", "title": "Табела 5. Порез на додату вредност"},
+        {"id": "Табела 6", "title": "Табела 6. Непорески приходи"},
+        {"id": "Табела 7", "title": "Табела 7. Укупни издаци буџета"},
+        {"id": "Табела 8", "title": "Табела 8. Укупни расходи за запослене"},
+        {"id": "Табела 9", "title": "Табела 9. Расходи по основу отплате камата"},
+        {"id": "Табела 10", "title": "Табела 10. Субвенције из буџета"},
+        {"id": "Табела 11", "title": "Табела 11. Донације и трансфери из буџета"},
     ],
     "02_budzet_vojvodine": [
-        {"id": "Табела 1", "pattern": r"[TТ][aа]бела 1\.?\s*Примања буџета Војводине"},
-        {"id": "Табела 2", "pattern": r"Табела 2\.?\s*Издаци буџета Војводине"},
+        {"id": "Табела 1", "title": "Табела 1. Примања буџета Војводине"},
+        {"id": "Табела 2", "title": "Табела 2. Издаци буџета Војводине"},
     ],
     "03_budzet_opstina": [
-        {"id": "Табела 1", "pattern": r"Табела 1\.?\s*Примања буџета општина"},
-        {"id": "Табела 2", "pattern": r"Табела 2\.?\s*Издаци буџета општина"},
+        {"id": "Табела 1", "title": "Табела 1. Примања буџета општина"},
+        {"id": "Табела 2", "title": "Табела 2. Издаци буџета општина"},
     ],
     "04_ooso": [
-        {"id": "Табела 1", "pattern": r"Табела 1\.?\s*Примања РФПИ[ОO]"},
-        {"id": "Табела 2", "pattern": r"Табела 2\.?\s*Издаци РФПИО"},
-        {"id": "Табела 3", "pattern": r"Табела 3\.?\s*Примања Републичког фонда за здравствено"},
-        {"id": "Табела 4", "pattern": r"Табела 4\.?\s*Издаци Републичког фонда за здравствено"},
-        {"id": "Табела 5", "pattern": r"Табела 5\.?\s*Примања Националне службе"},
-        {"id": "Табела 6", "pattern": r"Табела 6\.?\s*Издаци Националне службе"},
+        {"id": "Табела 1", "title": "Табела 1. Примања РФПИО"},
+        {"id": "Табела 2", "title": "Табела 2. Издаци РФПИО"},
+        {"id": "Табела 3", "title": "Табела 3. Примања Републичког фонда за здравствено"},
+        {"id": "Табела 4", "title": "Табела 4. Издаци Републичког фонда за здравствено"},
+        {"id": "Табела 5", "title": "Табела 5. Примања Националне службе"},
+        {"id": "Табела 6", "title": "Табела 6. Издаци Националне службе"},
     ],
 }
 
@@ -55,6 +55,60 @@ MULTI_PAGE_TABLES = {
     ("01_budzet_rs", "Табела 3"),
     ("01_budzet_rs", "Табела 7"),
 }
+
+# Table-name token only. b/б and l/л are not lookalikes, but the word
+# "table" is edited between scripts as a whole. Run before the lookalike map.
+_TABLE_TOKEN_RE = re.compile(
+    r"(?<![\w])[tт][aа][bб][eе][lл][aа](?=\d|\s|[:.]|$)"
+)
+
+# Lowercase Latin -> Cyrillic visual twins. Applied after casefold, so Latin
+# B (twin of Cyrillic В) is already "b". Not an orthographic transliteration.
+_LOOKALIKE_TO_CYRILLIC = str.maketrans({
+    "a": "а",
+    "b": "в",
+    "c": "с",
+    "e": "е",
+    "h": "н",
+    "j": "ј",
+    "k": "к",
+    "m": "м",
+    "o": "о",
+    "p": "р",
+    "t": "т",
+    "x": "х",
+    "y": "у",
+})
+
+_INVISIBLE_RE = re.compile(r"[\u00ad\u200b\u200c\u200d\ufeff]")
+_WS_RE = re.compile(r"[\s\u00a0\u202f\u2007\u2008\u2009\u200a\u205f\u3000]+")
+_COMPARE_STRIP_RE = re.compile(r"[\s.:;,\-\u2010\u2011\u2013\u2014]+")
+_TITLE_RE = re.compile(r"^табела\s*\d+\s*[:.]?\s*\S.{9,}")
+
+
+def _canonicalize_table_text(text):
+    """Fold case, the table-name token, and Latin/Cyrillic lookalikes.
+
+    Punctuation and single spaces are kept. Callers that compare titles use
+    `_table_match_key`. Never use this to rewrite a title stored in Excel.
+    """
+    if not text:
+        return ""
+    folded = unicodedata.normalize("NFKC", str(text))
+    folded = _INVISIBLE_RE.sub("", folded)
+    folded = _WS_RE.sub(" ", folded).strip().casefold()
+    folded = _TABLE_TOKEN_RE.sub("табела", folded)
+    return folded.translate(_LOOKALIKE_TO_CYRILLIC)
+
+
+def _table_match_key(text):
+    """Comparison key with whitespace and light punctuation removed."""
+    return _COMPARE_STRIP_RE.sub("", _canonicalize_table_text(text))
+
+
+def _is_table_title(text):
+    """True when text looks like a 'Табела N. ...' title after folding."""
+    return _TITLE_RE.match(_canonicalize_table_text(text)) is not None
 
 
 def scan_pages(pdf_path):
@@ -72,17 +126,19 @@ def find_table_pages(page_texts, log=None):
     if log is None:
         log = print
     table_pages = {}
+    page_keys = {
+        pg_num: _table_match_key(text) for pg_num, text in page_texts.items()
+    }
 
     for xlsx_name, table_defs in TABLE_PATTERNS.items():
         for tdef in table_defs:
             tid = tdef["id"]
-            pattern = tdef["pattern"]
+            needle = _table_match_key(tdef["title"])
             pages = []
-            for pg_num, text in sorted(page_texts.items()):
-                # Normalize text for matching
-                text_norm = text.replace('\n', ' ')
-                if re.search(pattern, text_norm):
-                    pages.append(pg_num)
+            if needle:
+                for pg_num, haystack in sorted(page_keys.items()):
+                    if needle in haystack:
+                        pages.append(pg_num)
             if pages:
                 table_pages[(xlsx_name, tid)] = pages
             else:
@@ -134,7 +190,7 @@ def _reconstruct_headers(camelot_table, pdf_path, page_num):
         if w_bottom_pdf < header_bottom_y or w_top_pdf > table_top_y + 50:
             continue
         # Skip title text
-        if _TABELA_RE.match(text):
+        if _is_table_title(text):
             continue
 
         # Find which column this word belongs to
@@ -974,18 +1030,15 @@ def extract_horizontal_merge(pdf_path, page_nums):
     return base
 
 
-_TABELA_RE = re.compile(r'[TТ]абела\s+\d+[\s.:].{10,}', re.IGNORECASE)
-
-
 def _extract_title_from_page(page_text):
     """Extract the table title line from page text (first 300 chars)."""
     for line in page_text.split('\n'):
         line = line.strip()
-        if _TABELA_RE.match(line):
+        if _is_table_title(line):
             return line
     # Try joining first two lines (title may wrap)
     lines = [l.strip() for l in page_text.split('\n') if l.strip()]
-    if len(lines) >= 2 and _TABELA_RE.match(lines[0] + ' ' + lines[1]):
+    if len(lines) >= 2 and _is_table_title(lines[0] + ' ' + lines[1]):
         return lines[0] + ' ' + lines[1]
     return None
 
@@ -1003,11 +1056,11 @@ def consolidate_title_row(df, title):
     for r in range(min(4, len(df))):
         for c in range(df.shape[1]):
             v = df.iloc[r, c]
-            if pd.notna(v) and isinstance(v, str) and _TABELA_RE.match(v.strip()):
+            if pd.notna(v) and isinstance(v, str) and _is_table_title(v.strip()):
                 # Remove only the title line, keep any other content (e.g. header text
                 # that got merged into the same cell via newline)
                 lines = v.strip().split('\n')
-                remaining = [l for l in lines if not _TABELA_RE.match(l.strip())]
+                remaining = [l for l in lines if not _is_table_title(l.strip())]
                 df.iloc[r, c] = '\n'.join(remaining) if remaining else ''
                 break
 
