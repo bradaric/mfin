@@ -6,6 +6,17 @@ from extract_tables import find_label_cols_count, find_table_pages
 
 
 class FindTablePagesTests(unittest.TestCase):
+    def test_finds_vojvodina_income_title_with_mixed_script(self):
+        key = ("02_budzet_vojvodine", "Табела 1")
+
+        for title in (
+            "Табела 1. Примања буџета Војводине у мил. динара",
+            "Taбела 1. Примања буџета Војводине у мил. динара  ",
+        ):
+            with self.subTest(title=title):
+                table_pages = find_table_pages({62: title}, log=lambda _message: None)
+                self.assertEqual(table_pages.get(key), [62])
+
     def test_finds_rfpio_income_title_with_cyrillic_or_latin_o(self):
         key = ("04_ooso", "Табела 1")
 
